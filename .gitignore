@@ -1,0 +1,30 @@
+# Python / Node / OS
+.DS_Store
+.claude/settings.local.json
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+/build/
+web/node_modules/
+web/dist/
+
+# Local data written while the app runs (never commit: may hold your run data)
+/runs/
+/output/
+/state/
+.env
+.env.*
+
+# Your own automations (paths, repo names). Only the README is shared; see examples/automations/.
+automations/*
+!automations/README.md
+
+# Flows you build in the app stay local. One built example ships with the repo.
+flows/*
+!flows/lead-qualification/
+flows/*/context.yaml
+
+# Test items written for test runs (state/tests holds the rest)
+**/data/.tests/

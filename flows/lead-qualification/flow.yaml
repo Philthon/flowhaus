@@ -1,0 +1,34 @@
+title: New lead qualification
+description: When a new lead comes in, reads their company website with Firecrawl,
+  looks the company up in Clay, keeps only companies with 50 or more employees, then
+  keeps only leads who are managers or more senior.
+trigger:
+  type: webhook
+  label: New lead comes in
+terms:
+  item: lead
+  items: leads
+title_field: full_name
+subtitle_field: email
+sample_input: data/leads.csv
+created_by: Claude
+groups:
+- id: receive
+  label: Get leads with websites
+  description: Gives you each lead with name, email and company website; skips invalid
+    and personal emails.
+  parent: null
+- id: research
+  label: Add company profile
+  description: Adds what the company does, tech stack, company size and industry from
+    Firecrawl and Clay; skips companies with unknown size.
+  parent: null
+- id: qualify
+  label: Keep companies of 50+
+  description: Skips companies with fewer than 50 employees.
+  parent: null
+- id: person
+  label: Keep senior contacts
+  description: Adds job title and seniority from Clay; skips leads Clay can't find
+    or below manager level.
+  parent: null

@@ -1,0 +1,8 @@
+# The smallest possible config: point at a workflow, and the map is built from its own jobs and steps.
+# Copy this folder to automations/<your-id>/ and change the two github lines.
+type: github_actions
+name: Nightly build
+description: Builds and tests the project every night.
+github:
+  repo: your-name/your-repo        # owner/name, readable with your `gh auth login`
+  workflow: nightly.yml            # file name in .github/workflows/

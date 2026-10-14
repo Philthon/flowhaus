@@ -1,0 +1,50 @@
+# A GitHub Actions workflow with a plain-English map whose numbers come from the run log.
+# Fictional example: a bot that reads RSS feeds, picks new articles and emails a digest.
+type: github_actions
+name: Weekly newsletter digest
+description: Picks this week's best articles from your feeds and emails them to subscribers.
+local_path: ~/code/newsletter-bot     # optional: the chat may READ this code (never write)
+github:
+  repo: your-name/newsletter-bot
+  workflow: digest.yml
+  allow_toggle: false                 # true lets the app turn the workflow on/off (gh workflow enable/disable)
+trigger: {type: schedule, label: "Mondays at 7:00 on GitHub Actions"}
+terms: {item: article, items: articles}
+input_terms: {item: feed, items: feeds}
+output: {label: Emailed to subscribers}
+summary: "{fetch_feeds.out} articles read → {pick_articles.out} picked → sent to {send_email.out} subscribers"
+io: {input_step: fetch_feeds, output_step: pick_articles}
+apps:
+  RSS: {does: "Where the articles come from.", connected: "Public feeds, no key"}
+  Mailgun: {does: "Sends the digest email.", connected: "Key kept in the newsletter-bot repo's GitHub secrets"}
+map:
+  groups:
+    - {id: collect, label: Collect articles, description: "Gives you every new article from your feeds, minus old and already-sent ones."}
+    - {id: send, label: Send the digest, description: "Emails the picked articles to every subscriber."}
+  steps:
+    - id: fetch_feeds
+      label: Read the feeds
+      description: Gives you every article published in your feeds this week.
+      group: collect
+      app: RSS
+      file: bot/feeds.py
+      out: {sum: '^Fetched (\d+) articles'}
+      rows: '^feed (?P<feed>\S+) ok (?P<articles>\d+)'
+    - id: pick_articles
+      label: Pick new articles
+      description: Keeps articles you haven't sent yet; skips old and duplicate ones.
+      group: collect
+      file: bot/pick.py
+      out: {sum: '^Picked (\d+)'}
+      skip:
+        - {count: '^skip (?P<url>\S+) (?P<reason>\w+)$', reason_map: {old: Older than a week, dup: Already sent}}
+      rows: '^pick (?P<title>.+)$'
+    - id: send_email
+      label: Email subscribers
+      description: Sends the digest to every subscriber with Mailgun.
+      group: send
+      app: Mailgun
+      file: bot/send.py
+      github_step: digest/Send digest
+      out: {sum: '^Sent to (\d+) subscribers'}
+      fail: {pattern: '^Mailgun error', message: "The email could not be sent: {line}"}

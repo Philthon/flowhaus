@@ -1,0 +1,20 @@
+# Concept groups shown on the map. Steps (Hamilton functions in pipeline/)
+# point at a group through their `group` tag. `parent` empty = top level.
+title: Contact list cleaning
+groups:
+  - id: load
+    label: Load contacts
+    description: Gives you the full contact list, with every contact numbered.
+    parent:
+  - id: clean
+    label: Clean up contacts
+    description: Fixes spacing, capitals and stray characters, and skips invalid emails.
+    parent:
+  - id: dedupe
+    label: Skip duplicates
+    description: Skips contacts whose email already appeared earlier in the list.
+    parent:
+  - id: export
+    label: Save clean list
+    description: Saves every contact that passed as a clean CSV file.
+    parent:

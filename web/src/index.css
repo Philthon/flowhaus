@@ -1,0 +1,229 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./styles/shadcn-tailwind.css";
+@import "@fontsource-variable/jost";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: "Jost Variable", "Futura", "Century Gothic", sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+/* ===========================================================================
+   Bauhaus theme, quiet version: flat, geometric, minimal.
+   Light neutral paper, hairline borders, softened primaries used sparingly:
+   red = problem, yellow = skipped, blue = running/selected, muted green = done.
+   Overriding Tailwind's color scales keeps every existing utility on-palette.
+   =========================================================================== */
+@theme {
+    --font-sans: "Jost Variable", "Futura", "Century Gothic", sans-serif;
+
+    --color-red-50: #fbf0ee; --color-red-100: #f5ddd9; --color-red-200: #ebbab3; --color-red-300: #dd9187;
+    --color-red-400: #cf6a5e; --color-red-500: #bf4a3e; --color-red-600: #a33e34; --color-red-700: #85332b;
+    --color-red-800: #672821; --color-red-900: #4a1d18; --color-red-950: #2b110e;
+
+    --color-amber-50: #fbf6e8; --color-amber-100: #f6ebcb; --color-amber-200: #eed99a; --color-amber-300: #e5c56a;
+    --color-amber-400: #dcb444; --color-amber-500: #cfa22e; --color-amber-600: #a98424; --color-amber-700: #7f631b;
+    --color-amber-800: #614b15; --color-amber-900: #44350f; --color-amber-950: #271e08;
+
+    --color-sky-50: #eef2f8; --color-sky-100: #dbe3f0; --color-sky-200: #b7c7e1; --color-sky-300: #92aad2;
+    --color-sky-400: #6e8ec3; --color-sky-500: #4a6fae; --color-sky-600: #3d5b8f; --color-sky-700: #304870;
+    --color-sky-800: #233452; --color-sky-900: #172235; --color-sky-950: #0b111a;
+
+    --color-violet-50: #eef2f8; --color-violet-100: #dbe3f0; --color-violet-200: #b7c7e1; --color-violet-300: #92aad2;
+    --color-violet-400: #6e8ec3; --color-violet-500: #4a6fae; --color-violet-600: #3d5b8f; --color-violet-700: #304870;
+    --color-violet-800: #233452; --color-violet-900: #172235; --color-violet-950: #0b111a;
+
+    --color-emerald-50: #eef5f0; --color-emerald-100: #dbe9df; --color-emerald-200: #b6d2bf; --color-emerald-300: #8fba9e;
+    --color-emerald-400: #6aa27f; --color-emerald-500: #4f8a65; --color-emerald-600: #417253; --color-emerald-700: #345b42;
+    --color-emerald-800: #274432; --color-emerald-900: #1a2e21; --color-emerald-950: #0d1711;
+
+    --shadow-2xs: 0 0 #0000; --shadow-xs: 0 0 #0000; --shadow-sm: 0 0 #0000;
+    --shadow-md: 0 0 #0000; --shadow-lg: 0 0 #0000; --shadow-xl: 0 0 #0000;
+}
+
+:root {
+    --background: #f7f6f3;
+    --foreground: #1f1f1d;
+    --card: #ffffff;
+    --card-foreground: #1f1f1d;
+    --popover: #ffffff;
+    --popover-foreground: #1f1f1d;
+    --primary: #1f1f1d;
+    --primary-foreground: #f7f6f3;
+    --secondary: #efede8;
+    --secondary-foreground: #1f1f1d;
+    --muted: #efede8;
+    --muted-foreground: #77736b;
+    --accent: #efede8;
+    --accent-foreground: #1f1f1d;
+    --destructive: #bf4a3e;
+    --border: #e5e2db;
+    --input: #d8d4cb;
+    --ring: #4a6fae;
+    --radius: 0rem;
+    --sidebar: #f7f6f3;
+    --sidebar-foreground: #1f1f1d;
+    --sidebar-border: #e5e2db;
+    --ink: #1f1f1d;
+    --bauhaus-red: #bf4a3e;
+    --bauhaus-yellow: #d9b043;
+    --bauhaus-blue: #4a6fae;
+}
+
+.dark {
+    --background: #171716;
+    --foreground: #ecebe7;
+    --card: #1e1e1c;
+    --card-foreground: #ecebe7;
+    --popover: #1e1e1c;
+    --popover-foreground: #ecebe7;
+    --primary: #ecebe7;
+    --primary-foreground: #171716;
+    --secondary: #272725;
+    --secondary-foreground: #ecebe7;
+    --muted: #272725;
+    --muted-foreground: #a09c94;
+    --accent: #272725;
+    --accent-foreground: #ecebe7;
+    --border: #33322f;
+    --input: #403f3b;
+    --sidebar: #171716;
+    --ink: #ecebe7;
+}
+
+@layer base {
+    body {
+        font-feature-settings: "tnum" 1;
+    }
+    h1, h2, h3 {
+        letter-spacing: -0.01em;
+    }
+}
+
+/* Flat canvas: no handles showing, crisp lines */
+.react-flow__handle {
+    opacity: 0;
+}
+.react-flow__edge-path {
+    stroke-linecap: square;
+}

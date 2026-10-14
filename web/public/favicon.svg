@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>.l{stroke:#1f1f1d}@media (prefers-color-scheme:dark){.l{stroke:#ecebe7}}</style>
+  <path class="l" d="M9 9 H23 V23 M9 9 V23" fill="none" stroke-width="1.75"/>
+  <circle cx="9" cy="9" r="6" fill="#4a6fae"/>
+  <path d="M9 17 L15 29 L3 29 Z" fill="#d9b043"/>
+  <rect x="17" y="17" width="12" height="12" fill="#bf4a3e"/>
+</svg>

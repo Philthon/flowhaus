@@ -1,0 +1,22 @@
+# A script that writes one folder per run (here: the fake runs/ folder next to this file).
+# Fictional example: a nightly export that pulls orders and turns them into invoices.
+type: folder_runs
+name: Invoice export
+description: Turns yesterday's orders into invoices and saves them for accounting.
+trigger: {type: schedule, label: "Every morning at 9:00 (cron on this computer)"}
+terms: {item: invoice, items: invoices}
+output: {label: Saved for accounting}
+folder_runs:
+  path: runs                                   # relative to local_path, or to this folder if there is none
+  pattern: '^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d$'  # which sub-folders are runs
+  time_format: '%Y-%m-%d_%H-%M-%S'             # read the start time from the folder name
+  input: orders.csv
+  output: invoices.csv
+  preview_words: 0                             # never show file contents
+  log: run.log                                 # the export's own log: explains failures
+map:
+  steps:
+    - {id: pull_orders, label: Pull orders, description: "Gives you yesterday's orders from the shop.", app: Shop,
+       produces: orders.csv, count: rows, unit: orders, show: [size, lines]}
+    - {id: make_invoices, label: Make invoices, description: "Turns every order into an invoice with tax and totals.",
+       produces: invoices.csv, count: rows, show: [size, modified]}

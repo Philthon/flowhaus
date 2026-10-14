@@ -1,0 +1,15 @@
+# Anything else (a cron job, n8n, a database table of runs, ...): write a small adapter in Python.
+# Fictional example: a backup script that appends one JSON line per run to a log file.
+type: python
+module: adapter.py                 # must define create(config, folder) -> Automation
+name: Photo backup
+description: Copies new photos to the backup drive and checks every copy.
+trigger: {type: schedule, label: "Every night at 2:00 (launchd on this computer)"}
+terms: {item: photo, items: photos}
+output: {label: Safe on the backup drive}
+log_file: backup.jsonl             # relative to this folder (or absolute)
+map:
+  steps:
+    - {id: find_new, label: Find new photos, description: "Gives you every photo added since the last backup."}
+    - {id: copy, label: Copy to the drive, description: "Copies each new photo; skips ones that can't be read."}
+    - {id: verify, label: Check the copies, description: "Keeps copies whose checksum matches; flags the rest."}
