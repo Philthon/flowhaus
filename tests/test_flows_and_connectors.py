@@ -1,4 +1,3 @@
-import json
 
 import pandas as pd
 import pytest
@@ -57,50 +56,35 @@ def test_skip_where_keeps_existing_reasons():
     assert out["_rejected_reason"].tolist() == ["first", "too small"]
 
 
-@pytest.mark.parametrize("tool,inp,allowed", [
-    ("Write", {"file_path": "flows/demo/steps/a.py"}, True),
-    ("Write", {"file_path": "flows/demo/data/sample.csv"}, True),
-    ("Write", {"file_path": "Data/contacts.csv"}, False),
-    ("Write", {"file_path": "flows/demo/flow.yaml"}, False),
-    ("Write", {"file_path": "server/app.py"}, False),
-    ("Write", {"file_path": "/etc/hosts"}, False),
-    ("Read", {"file_path": "STATE/connections.json"}, False),
-    ("Glob", {"pattern": "/Users/**/.env"}, False),
-    ("Read", {"file_path": "~/.ssh/id_rsa"}, False),
-    ("Read", {"file_path": "~/.zshrc"}, False),
-    ("Read", {"file_path": "../../.ssh/id_rsa"}, False),
-    ("Read", {"file_path": ".env"}, False),
-    ("Read", {"file_path": "flows/demo/steps/a.py"}, True),
-    ("Glob", {"pattern": "docs/*/state/*"}, False),
-    ("Glob", {"pattern": "**/*.py"}, False),  # replaced by the guarded find_files / search_files tools
-    ("Grep", {"pattern": "x", "path": "/etc"}, False),
-    ("Bash", {"command": "python -V"}, False),
-    ("mcp__clay__enrich_company", {"domain_or_email": "x.io"}, True),
+@pytest.mark.parametrize("tool,inp", [
+    ("Read", {"file_path": "server/app.py"}),
+    ("Write", {"file_path": "flows/demo/steps/a.py"}),
+    ("Bash", {"command": "python -V"}),
+    ("mcp__clay__enrich_company", {"domain_or_email": "x.io"}),
 ])
-def test_agent_guardrails(tool, inp, allowed):
-    assert (check_tool_use(tool, inp, builder=True) is None) is allowed
+def test_claude_codes_own_tools_follow_the_users_setup(tool, inp):
+    """Flowhaus doesn't police Claude Code's own tools: the user's Claude Code permissions do (see ask_permission)."""
+    assert check_tool_use(tool, inp, builder=False) is None
 
 
 @pytest.mark.parametrize("tool,inp", [
-    ("Write", {"file_path": "pipeline/clean.py"}),
-    ("Edit", {"file_path": "flows/demo/steps/a.py"}),
     ("mcp__flow__run_flow", {"flow_id": "contact-cleaning"}),
     ("mcp__flow__create_flow", {"flow_id": "x"}),
 ])
-def test_no_writing_or_running_without_the_builder(tool, inp):
-    """With the builder off (or on a connected automation), text in logs or code can't get code written or run."""
+def test_no_creating_or_running_flows_without_the_builder(tool, inp):
+    """With the builder off (or on a connected automation), text in logs or code can't get a flow created or run."""
     assert check_tool_use(tool, inp, builder=False) is not None
     assert check_tool_use(tool, inp) is not None  # default state in tests: demo off
+    assert check_tool_use(tool, inp, builder=True) is None
 
 
-def test_file_search_checks_every_file(tmp_path):
+def test_the_chat_runs_under_the_users_claude_code_setup():
     from server import agent
 
-    (agent.ROOT / "state").exists() or pytest.skip("needs the project folder")
-    files = {str(p.relative_to(agent.ROOT)) for p in agent._readable_files(None, None, 100_000)}
-    assert "server/agent.py" in files
-    assert not any(f.startswith(("state/", ".git/", ".venv/")) or "/.env" in f or f.startswith(".env") for f in files)
-    assert not list(agent._readable_files(None, ".e[n]v*", 100))
+    opts = agent.WORKER.options()
+    assert opts.setting_sources == ["user"] and opts.can_use_tool is agent.ask_permission
+    assert "strict-mcp-config" in opts.extra_args  # MCP servers: only the ones switched on in Flowhaus
+    assert not opts.tools and "Read" not in opts.allowed_tools  # its own tools, under its own permission rules
 
 
 def test_step_code_gets_no_secrets(monkeypatch):

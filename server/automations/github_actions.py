@@ -239,6 +239,7 @@ class StepRules:
         fail = step.get("fail")
         self.fail = re.compile(fail["pattern"] if isinstance(fail, dict) else fail) if fail else None
         self.fail_message = fail.get("message") if isinstance(fail, dict) else None
+        self.fail_kind = fail.get("kind") if isinstance(fail, dict) else None  # e.g. auth, transient (nextstep.KINDS)
 
     @property
     def any(self) -> bool:
@@ -277,6 +278,7 @@ def apply_rules(lines: list[str], steps: list[dict], section_re: re.Pattern | No
                 t["fail_texts"].append(text.strip())
     for sid, r in rules.items():
         tally[sid]["fail_message"] = r.fail_message
+        tally[sid]["fail_kind"] = r.fail_kind
     return tally
 
 
@@ -458,6 +460,13 @@ class GitHubActionsAutomation(Automation):
                 return self._list[1]
         return self._refresh_list()
 
+    def refresh(self) -> None:
+        with self._lock:
+            if self._refreshing:
+                return  # a read is already under way
+            self._refreshing = True
+        self._refresh_list()
+
     def _refresh_list(self) -> list[dict]:
         try:
             return self._read_list()
@@ -600,7 +609,8 @@ class GitHubActionsAutomation(Automation):
                 msg = (t["fail_message"] or "{line}").format(
                     sections=sections, line=t["fail_texts"][0], count=len(t["fail_sections"]), top_reason=top,
                     these="That one was" if n_sections == 1 else "Those were")
-                n["error"] = {"message": msg, "type": "RunError", "traceback": "\n".join(t["fail_texts"][:20])}
+                n["error"] = {"message": msg, "type": "RunError", "traceback": "\n".join(t["fail_texts"][:20]),
+                              **({"kind": t["fail_kind"]} if t.get("fail_kind") else {})}
                 log.append(("error", msg))
             elif n["status"] == "failed" and gst:
                 errs = [l for l in lines if l.startswith("##[error]")]
@@ -614,7 +624,8 @@ class GitHubActionsAutomation(Automation):
         run = {**summary, "nodes": nodes, "contacts": [], "groups": group_results(self.groups, self.steps, nodes)}
         if summary["status"] == "failed":
             msg = (nodes[first_failed]["error"] or {}).get("message") if first_failed else None
-            run["error"] = {"node_id": first_failed, "message": msg or _job_failure(jobs)}
+            kind = (nodes[first_failed]["error"] or {}).get("kind") if first_failed else None
+            run["error"] = {"node_id": first_failed, "message": msg or _job_failure(jobs), **({"kind": kind} if kind else {})}
         io = self.config.get("io") or {}
         with_rows = [s["id"] for s in self.steps if nodes[s["id"]]["sample_out"]]
         in_step = io.get("input_step") or (with_rows[0] if with_rows else None)

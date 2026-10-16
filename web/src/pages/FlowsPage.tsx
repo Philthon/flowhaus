@@ -1,7 +1,8 @@
 import { AlertTriangle, ArrowRight, ChevronDown, CloudOff, LayoutGrid, List, Loader2, Plug, Plus, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { go } from "@/App";
+import { go } from "@/lib/route";
+import { timeAgo } from "@/lib/time";
 import { EnabledToggle } from "@/components/EnabledToggle";
 import { OnboardingGuide } from "@/components/Onboarding";
 import { PageTitle } from "@/components/PageTitle";
@@ -12,15 +13,6 @@ import { AppBadge, TriggerIcon } from "@/lib/apps";
 import { STATUS_LABEL, STATUS_STYLE } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
-export function timeAgo(iso: string | null | undefined): string {
-  if (!iso) return "never";
-  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  const d = Math.round(s / 86400);
-  return d === 1 ? "yesterday" : `${d} days ago`;
-}
 
 type Filter = "active" | "attention" | "manual" | "paused" | "all";
 
@@ -119,6 +111,7 @@ export function FlowsPage() {
     () => Object.fromEntries(FILTERS.map((f) => [f.id, flows?.filter(f.test).length ?? 0])) as Record<Filter, number>,
     [flows],
   );
+  const needAttention = useMemo(() => (flows ?? []).filter((f) => !!attentionReason(f)), [flows]);
 
   const shown = useMemo(() => {
     const test = FILTERS.find((f) => f.id === filter)!.test;
@@ -165,16 +158,27 @@ export function FlowsPage() {
         ) : (
           <>
             {counts.attention > 0 && filter !== "attention" && (
-              <button
-                onClick={() => setFilter("attention")}
-                className="flex w-full items-center gap-2 border border-red-100 bg-red-50 px-3 py-2 text-left text-sm text-red-800 hover:border-red-200"
-              >
-                <AlertTriangle className="size-4 shrink-0" />
-                <b>
-                  {counts.attention} {counts.attention === 1 ? "flow needs" : "flows need"} attention
-                </b>
-                <span className="ml-auto text-xs underline">Show</span>
-              </button>
+              // name them: some may be hidden by the current filter (a manual or paused flow), so a count alone confuses
+              <div className="flex w-full items-start gap-2 border tone-error px-3 py-2 text-sm">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <p className="min-w-0 flex-1">
+                  <b className="font-medium">
+                    {counts.attention} {counts.attention === 1 ? "flow needs" : "flows need"} attention:
+                  </b>{" "}
+                  {needAttention.slice(0, 4).map((f, i) => (
+                    <span key={f.id}>
+                      {i > 0 && ", "}
+                      <a className="underline underline-offset-2" href={`#/flow/${f.id}`}>
+                        {f.name}
+                      </a>
+                    </span>
+                  ))}
+                  {needAttention.length > 4 && ` and ${needAttention.length - 4} more`}
+                </p>
+                <button type="button" onClick={() => setFilter("attention")} className="shrink-0 text-xs underline">
+                  Show them all
+                </button>
+              </div>
             )}
 
             <div className="flex flex-wrap items-center gap-2">
@@ -350,7 +354,17 @@ function FlowDetails({ flow, attention, onChanged }: { flow: FlowCard; attention
   const s = flow.stats_7d;
   return (
     <div className="space-y-3 border-t bg-muted/20 px-4 py-3 text-sm">
-      {attention && <p className="text-red-800 dark:text-red-300">{attention}</p>}
+      {attention && (
+        <div className="space-y-0.5">
+          <p className="text-red-800 dark:text-red-300">{attention}</p>
+          {flow.next_step && (
+            <p>
+              <b className="font-medium">Next step: </b>
+              {flow.next_step} <a className="underline underline-offset-2" href={`#/flow/${flow.id}`}>Open the flow</a>
+            </p>
+          )}
+        </div>
+      )}
       <dl className="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1.5">
         <dt className="text-muted-foreground">Starts when</dt>
         <dd className="flex items-center gap-1.5">
@@ -424,7 +438,7 @@ function Freshness({ flows, onRefresh }: { flows: FlowCard[]; onRefresh: () => v
         {times.length > 0 && <> {timeAgo(times[0])}</>}.
       </span>
       {failed.length > 0 && (
-        <span className="text-red-700">
+        <span className="text-red-700 dark:text-red-400">
           {failed.length === 1 ? `Couldn't read “${failed[0].name}” just now` : `Couldn't read ${failed.length} automations just now`};
           showing what was read before.
         </span>
@@ -441,11 +455,11 @@ function KpiValue({ kpi }: { kpi: Kpi }) {
   const better = kpi.delta != null && kpi.delta !== 0 && kpi.delta > 0 === (kpi.good === "up");
   return (
     <div className="min-w-0" title={kpi.hint}>
-      <div className={cn("text-2xl font-medium tabular-nums tracking-tight", kpi.tone === "bad" && "text-red-700")}>{kpi.value}</div>
+      <div className={cn("text-2xl font-medium tabular-nums tracking-tight", kpi.tone === "bad" && "text-red-700 dark:text-red-400")}>{kpi.value}</div>
       <div className="truncate text-xs text-muted-foreground">
         {kpi.label}
         {kpi.delta != null && kpi.delta !== 0 && (
-          <span className={cn("ml-1 tabular-nums", better ? "text-emerald-700" : "text-red-700")}>
+          <span className={cn("ml-1 tabular-nums", better ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-400")}>
             {kpi.delta > 0 ? "▲" : "▼"} {Math.abs(kpi.delta).toLocaleString()}
           </span>
         )}
@@ -494,7 +508,7 @@ function FlowTile({ flow }: { flow: FlowCard }) {
       <div className="mt-auto flex items-center justify-between gap-2">
         <RunStrip flow={flow} />
         {flow.freshness?.error && (
-          <span className="flex items-center gap-1 text-[11px] text-red-700" title={flow.freshness.error}>
+          <span className="flex items-center gap-1 text-[11px] text-red-700 dark:text-red-400" title={flow.freshness.error}>
             <CloudOff className="size-3" />
             {flow.freshness.checked_at ? `as of ${fmtTime(flow.freshness.checked_at)}` : "couldn't read"}
           </span>

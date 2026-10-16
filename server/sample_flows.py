@@ -30,8 +30,20 @@ class SampleStep:
     description: str
     group: str
     app: str
-    fn: Callable[[dict, random.Random], dict]
+    fn: Callable[[dict, random.Random], dict] | None  # None: a decision, which only routes items
     ms: tuple[int, int] = (80, 400)
+    # flowchart shape and paths, as in automation.yaml (see server/maps.py)
+    kind: str = "action"
+    next: str | None = None
+    branches: list[dict] | None = None
+    rule: str | None = None
+    explain: str | None = None
+    example: str | None = None
+    # a step on one path of a decision handles only the items that took that path
+    only: Callable[[dict], bool] | None = None
+
+    def handles(self, item: dict) -> bool:
+        return self.fn is not None and (self.only is None or self.only(item))
 
 
 @dataclass
@@ -73,6 +85,12 @@ COMPANIES = [("Northwind Logistics", "northwind.io", 420, "Logistics"), ("Bright
 FREE_MAIL = ["gmail.com", "outlook.com", "yahoo.com"]
 TITLES = ["Head of Operations", "VP Sales", "Founder", "Marketing Manager", "CTO", "Office Manager", "Student",
           "RevOps Lead", "Head of Growth", "Freelancer"]
+
+
+def item_rng(step_id: str, item: dict) -> random.Random:
+    """The demo apps' "answers" for one item depend only on that item, like a real lookup, so the same item gives the
+    same result every time (and a replay of an unchanged flow gives the same output)."""
+    return random.Random(step_id + "|" + "|".join(f"{k}={item[k]}" for k in sorted(item) if not str(k).startswith("_")))
 
 
 def lead_items(rng: random.Random) -> list[dict]:
@@ -337,24 +355,141 @@ INVOICES = SampleFlow(
     events=[(29, "change", "Flow paused by you after the Xero connection expired")],
 )
 
-SAMPLE_FLOWS = {f.id: f for f in (LEADS, CHURN, INVOICES)}
-ENABLED_BY_DEFAULT = {"lead-enrichment": True, "churn-digest": True, "invoice-booking": False}
+# --------------------------------------------------------------------------- flow 4: Salesforce accounts from a sheet
+#
+# Modelled on n8n's template "Create Salesforce accounts based on Google Sheets data"
+# (https://n8n.io/workflows/1792): read contact rows from a Google Sheet, look each company up in Salesforce by its
+# exact name, create the accounts that don't exist yet, then create or update each contact (by email), linked to its
+# account. Like the template, the lookup matches the exact name, so "Kite Analytics Inc." in the sheet doesn't find
+# "Kite Analytics" in Salesforce and a second account is created.
+
+SF_ACCOUNTS = {"Northwind Logistics": "001Qy00000NwLgAAK", "Brightpath Health": "001Qy00000BpHeAAK",
+               "Kite Analytics": "001Qy00000KiAnAAK", "Sable Finance": "001Qy00000SbFnAAK", "Fernhill Schools": "001Qy00000FhScAAK"}
+SHEET_COMPANIES = ["Northwind Logistics", "Brightpath Health", "Kite Analytics", "Kite Analytics Inc.", "Sable Finance",
+                   "Fernhill Schools", "Orbit Robotics", "Lumen Legal", "Tidewater Studio", "Quanta Retail", "Pioneer Freight"]
+
+
+def sheet_rows(rng: random.Random) -> list[dict]:
+    rows = []
+    for _ in range(rng.randint(6, 14)):
+        first, last = rng.choice(FIRST), rng.choice(LAST)
+        company = rng.choice(SHEET_COMPANIES)
+        domain = company.split()[0].lower().strip(".,") + ".com"
+        email = f"{first}.{last}@{domain}".upper() if rng.random() < 0.1 else f"{first}.{last}@{domain}".lower()
+        rows.append({"first_name": f" {first}" if rng.random() < 0.15 else first, "last_name": last,
+                     "email": "" if rng.random() < 0.012 else email,  # now and then someone leaves it empty
+                     "company_name": company})
+    return rows
+
+
+def _sf_id(prefix: str, key: str) -> str:
+    return f"{prefix}Qy0000{zlib.crc32(key.encode()) % 10_000_000:07d}AAK"
+
+
+def read_sheet(item, rng):
+    item["first_name"] = item["first_name"].strip()
+    item["email"] = item["email"].strip().lower()
+    return item
+
+
+def search_account(item, rng):
+    # SOQL: SELECT Id, Name FROM Account WHERE Name = '<company name>' (exact match)
+    item["found_account_id"] = SF_ACCOUNTS.get(item["company_name"])
+    return item
+
+
+def use_account(item, rng):
+    item["account_id"] = item["found_account_id"]
+    return item
+
+
+def create_account(item, rng):
+    # one account per company name: rows for the same new company get the same account
+    item["account_id"] = _sf_id("001", item["company_name"])
+    item["account_created"] = True
+    return item
+
+
+def upsert_contact(item, rng):
+    if not item["email"]:  # the upsert matches on email: Salesforce refuses the row, and n8n stops the run there
+        raise StepFailure(f"Salesforce: REQUIRED_FIELD_MISSING: Email is empty for {item['first_name']} {item['last_name']} "
+                          f"({item['company_name']}). n8n stopped at this row: the contacts before it were saved, the ones "
+                          "after it weren't.")
+    item["contact_id"] = _sf_id("003", item["email"])
+    item["contact_action"] = "Updated" if zlib.crc32(item["email"].encode()) % 3 == 0 else "Created"
+    return item
+
+
+SALESFORCE = SampleFlow(
+    id="salesforce-sheet-sync",
+    name="Salesforce accounts from a sheet",
+    description="Turns the contacts in a Google Sheet into Salesforce contacts, each linked to its company's account.",
+    trigger={"type": "manual", "label": "When you click “Execute workflow” in n8n", "app": "n8n"},
+    terms={"item": "contact", "items": "contacts"},
+    title_field="email", subtitle_field="company_name",
+    groups=[
+        {"id": "sheet", "label": "Read the sheet", "description": "Gives you each contact row: first name, last name, email and company name.", "parent": None},
+        {"id": "accounts", "label": "Find or create the account", "description": "Adds the Salesforce account ID: the existing account's, or a new one's.", "parent": None},
+        {"id": "contacts", "label": "Create or update the contact", "description": "Saves each contact in Salesforce by email, linked to its account.", "parent": None},
+    ],
+    steps=[
+        SampleStep("read_sheet", "Read contact rows", "Gives you first name, last name, email and company name from each row, with the email cleaned up.",
+                   "sheet", "Google Sheets", read_sheet, (300, 900),
+                   explain="Reads every row of the sheet you set in the Google Sheets step. The columns are First Name, Last Name, Email and Company Name.",
+                   example="Aiko Tanaka · aiko.tanaka@orbit.com · Orbit Robotics"),
+        SampleStep("search_account", "Look up the company in Salesforce", "Adds the account ID when Salesforce has an account with exactly this company name.",
+                   "accounts", "Salesforce", search_account, (400, 1200),
+                   explain="Searches Salesforce accounts for the company name, letter for letter. “Kite Analytics Inc.” doesn't find “Kite Analytics”.",
+                   example="Northwind Logistics → 001Qy00000NwLgAAK"),
+        SampleStep("account_found", "Account already in Salesforce?", "Sends rows with a matching account one way, new companies the other.",
+                   "accounts", "n8n", None, (5, 20), kind="decision",
+                   rule="The lookup found an account with exactly this company name",
+                   explain="Only an exact name match counts as the same company.",
+                   branches=[{"label": "Yes", "to": "use_account"},
+                             {"label": "No", "to": "create_account", "when": "No account with exactly this name: a new one is created"}]),
+        SampleStep("use_account", "Use the existing account", "Keeps the account ID that was found, to link the contact to it.",
+                   "accounts", "n8n", use_account, (5, 20), next="upsert_contact", only=lambda r: bool(r.get("found_account_id"))),
+        SampleStep("create_account", "Create the account", "Creates an account for each new company name (once, even if several rows have it) and adds its ID.",
+                   "accounts", "Salesforce", create_account, (500, 1500), next="upsert_contact",
+                   only=lambda r: not r.get("found_account_id"),
+                   explain="Creates the account with just its name, then adds the new account's ID to every row of that company."),
+        SampleStep("upsert_contact", "Create or update the contact", "Updates the contact with the same email, or creates it, linked to its account. Adds the contact ID.",
+                   "contacts", "Salesforce", upsert_contact, (600, 1800),
+                   explain="Matches contacts by email: an existing contact is updated (name and account), otherwise a new one is created.",
+                   example="aiko.tanaka@orbit.com → contact 003Qy00004417291AAK, linked to Orbit Robotics"),
+    ],
+    make_items=sheet_rows,
+    run_times=lambda now: [now - timedelta(days=d, hours=(d * 5) % 9) for d in (0, 1, 3, 6, 8, 11, 13)],
+    next_run="When you run it in n8n",
+    output="Contacts in Salesforce, linked to their account",
+    events=[(340, "change", "Workflow imported from the n8n template “Create Salesforce accounts based on Google Sheets data”")],
+)
+
+
+SAMPLE_FLOWS = {f.id: f for f in (LEADS, CHURN, INVOICES, SALESFORCE)}
+ENABLED_BY_DEFAULT = {"lead-enrichment": True, "churn-digest": True, "invoice-booking": False, "salesforce-sheet-sync": True}
 
 
 # --------------------------------------------------------------------------- run generation
 
 
 def _flow_steps(flow: SampleFlow) -> list[dict]:
-    return [{"id": s.id, "label": s.label, "description": s.description, "group": s.group, "app": s.app,
-             "file": None, "line": None, "inputs": []} for s in flow.steps]
+    steps = []
+    for s in flow.steps:
+        step = {"id": s.id, "label": s.label, "description": s.description, "group": s.group, "app": s.app,
+                "file": None, "line": None, "inputs": []}
+        step.update({k: v for k, v in (("kind", s.kind), ("next", s.next), ("branches", s.branches), ("rule", s.rule),
+                                       ("explain", s.explain), ("example", s.example)) if v and v != "action"})
+        steps.append(step)
+    return steps
 
 
 def build_map(flow: SampleFlow) -> dict:
     steps = _flow_steps(flow)
-    edges = [{"source": a.id, "target": b.id} for a, b in zip(flow.steps, flow.steps[1:])]
+    edges = maps.chain_edges(steps)
     return {"title": flow.name, "groups": flow.groups, "steps": steps, "edges": edges, "inputs": [],
             "levels": maps.build_levels(flow.groups, steps, edges),
-            "problems": maps.validate(flow.groups, steps)}
+            "problems": maps.validate(flow.groups, steps) + maps.path_problems(steps, edges, True, True)}
 
 
 def simulate_run(flow: SampleFlow, run_id: str, started: datetime, seed: int, fail: tuple[str, str] | None,
@@ -385,14 +520,35 @@ def simulate_run(flow: SampleFlow, run_id: str, started: datetime, seed: int, fa
             frames[step.id] = (before, None)
             error = {"node_id": step.id, "message": fail[1]}
             continue
-        out = []
+        out, mine, failure = [], [], None
         for rec in before.to_dict(orient="records"):
             rec = {k: runs._clean(v) for k, v in rec.items()}
-            out.append(rec if rec.get("_rejected_reason") else step.fn(dict(rec), rng))
+            if rec.get("_rejected_reason") or not step.handles(rec):
+                out.append(rec)  # skipped earlier, on another path, or a decision (which only routes)
+                continue
+            mine.append(rec["_row_id"])
+            try:
+                out.append(step.fn(dict(rec), item_rng(step.id, rec)))
+            except StepFailure as exc:  # one item made the whole step fail, as the real app would
+                failure = str(exc)
+                break
+        if failure:
+            node.update(runs.compare(before, None))
+            node["status"] = "failed"
+            node["error"] = {"message": failure, "type": "IntegrationError", "traceback": f"{step.app} API error\n{failure}"}
+            runs.add_step_log(node, stamp, error=failure)
+            frames[step.id] = (before, None)
+            error = {"node_id": step.id, "message": failure}
+            continue
         frame = pd.DataFrame(out)
         frames[step.id] = (before, frame)
-        node.update(runs.compare(before, frame))
-        node["status"] = "success"
+        if step.only:  # count only the items that took this path; none means the path wasn't taken this run
+            on_path = before["_row_id"].isin(mine)
+            node.update(runs.compare(before[on_path], frame[frame["_row_id"].isin(mine)]))
+            node["status"] = "success" if mine else "not_run"
+        else:
+            node.update(runs.compare(before, frame))
+            node["status"] = "success"
         t += timedelta(milliseconds=node["duration_ms"])
         runs.add_step_log(node, t.isoformat(timespec="seconds"), items=flow.terms["items"])
     run = {"run_id": run_id, "flow_id": flow.id, "status": "failed" if error else "success",

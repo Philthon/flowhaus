@@ -64,11 +64,80 @@ map:
       app: RSS                  # optional badge: the outside service this step talks to
       file: bot/feeds.py        # optional: the code behind it, relative to local_path
       unit: pages               # optional: what this step counts, if not `terms.items`
+      explain: Reads each feed and keeps articles published since last Monday.   # the logic, in plain words
+      example: "“How we cut our build time in half” from example.com/rss"        # shown when no real item is
 ```
+
+A box with steps inside is drawn with a second sheet behind it, like a stack: double-click it (or use **Open** in its quick view) to see the steps. A group with only one step inside has nothing to open, so the map shows that step in its place.
+
+When you rest on a shape, a quick view shows:
+- `explain`, or the description if there's none
+- the last run in one line
+- one sample: a real item from the last run (what it changed, or one it skipped and why), otherwise `example`
+
+The step's "About" tab shows all of it, plus the code file and every step a change here can reach.
 
 Write descriptions about **what the step gives you**, not how it works. Name the fields it adds and what it skips:
 - **Good:** "Adds each page's text from Firecrawl; skips pages that can't be fetched."
 - **Bad:** "Calls the scrape API in a loop."
+
+### Start, end, decisions and waits
+
+The map is drawn as a flowchart, with shapes in the style of Blue Prism:
+
+| Shape | What it is | Where it comes from |
+|---|---|---|
+| Pill, "Start" | What starts the automation | `trigger.label`, required |
+| Box | A step that does something | a step (`kind: action` is the default) |
+| Diamond | A decision: a question with labelled answers | `kind: decision` |
+| Pointed on the left, flat on the right | A choice: a decision with three or more answers | `kind: decision` with 3+ `branches` |
+| Box with cut corners | A wait: items held until something happens | `kind: wait` |
+| Pill, "End" | How a path finishes | `kind: end`, or the flow's result (`output.label`) |
+
+```yaml
+trigger: {label: "Weekdays at 7:00"}          # the start (required)
+output: {label: "Booked with a coach"}        # the end of the main path (or use `kind: end` steps)
+map:
+  steps:
+    - {id: read_requests, label: Read new sign-ups, description: "Gives you every sign-up from today."}
+    - id: wants_coaching
+      kind: decision
+      label: Coaching requested?
+      description: Checks whether the person asked for coaching.
+      rule: "The coaching date is filled in and in the future"   # the actual rule, in words
+      file: src/coaching.py
+      branches:                                 # the first answer goes straight on, the second down, a third up
+        - {label: "Yes", to: book_coach}
+        - {label: "No", to: not_requested, when: "No coaching date, or one in the past"}
+    - {id: book_coach, label: Book a coach, description: "Adds a booked slot with a coach."}
+    - {id: confirm, label: Send the confirmation, description: "Emails the booked slot to the person."}
+    - {id: not_requested, kind: end, label: "Skipped: coaching not requested", description: "Nothing is booked."}
+```
+
+How the paths are worked out:
+- **Next in the list.** A step goes to the next listed step, unless it has `next: <step id>` (or a list of ids) or, for a decision, `branches:`.
+- **Ends are never fallen into.** An `end` is reached only through `next:` or a branch. A path that runs out of steps ends at the flow's result (`output.label`).
+- **Write ends as outcomes.** For example: "Published", "Skipped: coaching not requested", "Held for review". "Not requested" and "Declined" are different ends.
+- **Counts are optional.** A decision needs no counts. Which answer a run took shows from which steps ran: the path not taken stays grey.
+- **Choices are checked top-down.** With three or more answers, the first that fits wins, and the map numbers them in that order ("1. Enterprise", "2. Mid-market"). End with a catch-all: `{label: Otherwise, otherwise: true, to: ...}`.
+- **Loops show as "Go back to".** A path back to an earlier step ("wait 10 minutes and look again") is drawn as a marker next to where it leaves, not as a line running backwards. Click the marker to see the step it goes back to.
+
+```yaml
+    - id: drive_ok
+      kind: decision
+      label: Backup drive connected?
+      branches:                                 # three or more answers: a choice, checked top-down
+        - {label: "Yes", to: copy}
+        - {label: "Not yet", to: retry, when: "Fewer than 3 tries so far"}
+        - {label: Otherwise, otherwise: true, to: stopped, when: "Still missing after 3 tries"}
+    - {id: retry, kind: wait, label: Wait and look again, description: "Waits 10 minutes.", next: drive_ok}   # a loop
+```
+
+`flowhaus check` fails until all of these hold:
+- The map has a start (`trigger.label`) and an end (`output.label` or an `end` step).
+- Every decision has at least two labelled answers.
+- A choice has at most one "Otherwise", and it's the last answer.
+- Every step is reached from the start.
 
 ## `github_actions`
 
@@ -100,7 +169,7 @@ github:
 | `out: {count: '^✓ '}` | Items out: number of matching lines. A bare string means `count`. |
 | `skip: [...]` | Skipped items with a reason. A list of rules (see below). |
 | `rows: '✓ fetched (?P<page>\S+)'` | Each match becomes a row in the step's table. Named groups become columns. |
-| `fail: {pattern: '✗ all .* failed', message: "Nothing fetched for {sections}"}` | A matching line fails the step, with this message. |
+| `fail: {pattern: '✗ all .* failed', message: "Nothing fetched for {sections}", kind: transient}` | A matching line fails the step, with this message. `kind` (optional) says what kind of failure it is (`auth`, `credits`, `transient`, `connect`, `gone`, `file`, `data`, `duplicate` or `code`), so the next step Flowhaus suggests fits; without it, Flowhaus guesses from the message. |
 
 Skip rules:
 
@@ -248,7 +317,7 @@ See [`examples/automations/backup-log/adapter.py`](../examples/automations/backu
 - your configs
 - the GitHub CLI's output, through `gh run list`, `gh run view`, `gh workflow list` and `gh api` (GET only)
 - run folders (metadata)
-- source files under `local_path`, by the chat only, after a file guard
+- source files under `local_path`, by the chat (its own tools, under your Claude Code or Codex permissions)
 - file names (never contents) in the folders that mapped steps' `file`s live in, to spot code that isn't on the map
 
 **Writes:**

@@ -227,3 +227,43 @@
 .react-flow__edge-path {
     stroke-linecap: square;
 }
+
+/* Tinted boxes for status messages (failed, needs a look, for your information), in light and dark.
+   Colour only for status: these are the only tinted backgrounds. */
+:root {
+    --tone-error-bg: var(--color-red-50);
+    --tone-error-border: var(--color-red-200);
+    --tone-error-text: var(--color-red-800);
+    --tone-warn-bg: var(--color-amber-50);
+    --tone-warn-border: var(--color-amber-200);
+    --tone-warn-text: var(--color-amber-900);
+    --tone-info-bg: var(--color-sky-50);
+    --tone-info-border: var(--color-sky-100);
+    --tone-info-text: var(--color-sky-800);
+}
+.dark {
+    --tone-error-bg: color-mix(in srgb, var(--color-red-500) 14%, var(--background));
+    --tone-error-border: color-mix(in srgb, var(--color-red-500) 40%, var(--background));
+    --tone-error-text: var(--color-red-200);
+    --tone-warn-bg: color-mix(in srgb, var(--color-amber-500) 12%, var(--background));
+    --tone-warn-border: color-mix(in srgb, var(--color-amber-500) 35%, var(--background));
+    --tone-warn-text: var(--color-amber-100);
+    --tone-info-bg: color-mix(in srgb, var(--color-sky-500) 12%, var(--background));
+    --tone-info-border: color-mix(in srgb, var(--color-sky-500) 35%, var(--background));
+    --tone-info-text: var(--color-sky-100);
+}
+@utility tone-error {
+    background-color: var(--tone-error-bg);
+    border-color: var(--tone-error-border);
+    color: var(--tone-error-text);
+}
+@utility tone-warn {
+    background-color: var(--tone-warn-bg);
+    border-color: var(--tone-warn-border);
+    color: var(--tone-warn-text);
+}
+@utility tone-info {
+    background-color: var(--tone-info-bg);
+    border-color: var(--tone-info-border);
+    color: var(--tone-info-text);
+}

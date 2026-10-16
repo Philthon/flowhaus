@@ -22,6 +22,7 @@ import inspect
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -122,6 +123,52 @@ SAFE_ENV_KEYS = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TEMP", "T
 
 def step_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k in SAFE_ENV_KEYS or k.startswith(("LC_", "FLOWHAUS_"))}
+
+
+# --------------------------------------------------------------------------- test mode: an isolated run
+#
+# Runs nobody asked to be real (Try it, Replay, the test lab, the chat's runs and re-runs) execute inside an operating
+# system sandbox: the step code can write only to its scratch folder (and the run records), and can't reach the
+# network. So a test can't publish, send, pay or overwrite a real output, even if a step ignores the folder it's given.
+#   macOS  sandbox-exec (built in)
+#   Linux  bubblewrap (`bwrap`), if installed
+# Elsewhere the run still goes to the scratch folder, but isn't isolated; `flowhaus doctor` says so.
+
+
+def sandbox_tool() -> str | None:
+    """The sandbox this computer has for test runs, or None."""
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
+        return "sandbox-exec"
+    if sys.platform.startswith("linux") and (bwrap := shutil.which("bwrap")):
+        return bwrap
+    return None
+
+
+def sandboxed(cmd: list[str], writable: list[Path]) -> tuple[list[str], bool]:
+    """`cmd` wrapped so it can write only inside `writable` and has no network: (command, isolated?)."""
+    tool = sandbox_tool()
+    dirs = []
+    for d in writable:
+        d.mkdir(parents=True, exist_ok=True)
+        dirs.append(str(d.resolve()))
+    if tool == "sandbox-exec":
+        allowed = " ".join(f'(subpath "{d}")' for d in dirs)
+        profile = ("(version 1)(allow default)(deny network*)(deny file-write*)"
+                   f'(allow file-write* {allowed} (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))')
+        return ["/usr/bin/sandbox-exec", "-p", profile, *cmd], True
+    if tool:
+        binds = [a for d in dirs for a in ("--bind", d, d)]
+        return [tool, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net",
+                *binds, "--", *cmd], True
+    return cmd, False
+
+
+def test_env(scratch: Path) -> dict[str, str]:
+    """The minimal step environment, marked as a test, with temporary files in the scratch folder."""
+    tmp = scratch / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    return {**step_env(), "FLOWHAUS_TEST": "1", "TMPDIR": str(tmp), "TMP": str(tmp), "TEMP": str(tmp),
+            "PYTHONDONTWRITEBYTECODE": "1", "HAMILTON_TELEMETRY_ENABLED": "false"}
 
 
 def _describe_in_subprocess(pipeline_dir: Path):

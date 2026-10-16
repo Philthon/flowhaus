@@ -6,37 +6,9 @@ import { ActivityPage } from "@/pages/ActivityPage";
 import { ConnectionsPage } from "@/pages/ConnectionsPage";
 import { FlowPage } from "@/pages/FlowPage";
 import { FlowsPage } from "@/pages/FlowsPage";
+import { go, href, parse, type Route } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
-export type Route =
-  | { page: "flows" }
-  | { page: "activity"; flowId?: string }
-  | { page: "connections" }
-  | { page: "new" }
-  | { page: "flow"; flowId: string; runId?: string };
-
-function parse(hash: string): Route {
-  const [path, query] = hash.replace(/^#\/?/, "").split("?");
-  const params = new URLSearchParams(query ?? "");
-  const [page, id] = path.split("/");
-  if (page === "flow" && id) return { page: "flow", flowId: id, runId: params.get("run") ?? undefined };
-  if (page === "activity") return { page: "activity", flowId: params.get("flow") ?? undefined };
-  if (page === "connections") return { page: "connections" };
-  if (page === "new") return { page: "new" };
-  return { page: "flows" };
-}
-
-export function href(route: Route): string {
-  if (route.page === "flow") return `#/flow/${route.flowId}${route.runId ? `?run=${encodeURIComponent(route.runId)}` : ""}`;
-  if (route.page === "activity") return `#/activity${route.flowId ? `?flow=${route.flowId}` : ""}`;
-  if (route.page === "connections") return "#/connections";
-  if (route.page === "new") return "#/new";
-  return "#/flows";
-}
-
-export const go = (route: Route) => {
-  window.location.hash = href(route);
-};
 
 export default function App() {
   const [route, setRoute] = useState<Route>(() => parse(window.location.hash));
@@ -93,16 +65,14 @@ function RailLink({ active, to, label, children }: { active: boolean; to: Route;
   );
 }
 
-/** Bauhaus mark: circle, square, triangle in the three primaries. */
-/** Flowhaus's mark: a start (circle) that branches into two steps (triangle, square), like a tiny map. */
+/** Flowhaus's mark: a house built from the three Bauhaus shapes, a triangle roof over a circle and a square. */
 function LogoMark() {
   return (
     <a href="#/flows" className="mb-4 block" title="Flowhaus" aria-label="Flowhaus home">
       <svg viewBox="0 0 32 32" className="size-7" aria-hidden>
-        <path d="M9 9 H23 V23 M9 9 V23" fill="none" stroke="var(--foreground)" strokeWidth="1.5" />
-        <circle cx="9" cy="9" r="6" fill="var(--bauhaus-blue)" />
-        <path d="M9 17 L15 29 L3 29 Z" fill="var(--bauhaus-yellow)" />
-        <rect x="17" y="17" width="12" height="12" fill="var(--bauhaus-red)" />
+        <path d="M16 2 L30 15 L2 15 Z" fill="var(--bauhaus-yellow)" />
+        <circle cx="9" cy="23.5" r="6.5" fill="var(--bauhaus-blue)" />
+        <rect x="17" y="17" width="13" height="13" fill="var(--bauhaus-red)" />
       </svg>
     </a>
   );

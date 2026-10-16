@@ -15,42 +15,29 @@ Flowhaus is a **local, single-user tool**. It runs on your computer with your pe
 | Risk | What Flowhaus does |
 |---|---|
 | Another website calling the local API (CSRF, DNS rebinding) | The server binds to `127.0.0.1` and only answers `Host: localhost / 127.0.0.1`. Changes (non-GET) are accepted only from Flowhaus's own page, matched by exact origin (scheme, host and port), and are refused when `Sec-Fetch-Site` says another site. (`server/app.py`) |
-| The chat reading secrets or personal data | The chat has **no shell**. It reads with `Read`, `find_files` and `search_files`, and every single file is checked by `check_tool_use` / `_read_denied` in `server/agent.py`. See below. |
-| The chat writing code, or getting code run | Running code: only in the **builder**, which needs demo flows turned on and a flow built in Flowhaus (or the "new flow" page). Writing: there, or in the private copy of a connected automation's repo when `pull_requests` is enabled, where nothing runs. While you look at a connected automation, nothing is run, even if text in a log or source file asks for it. |
+| What the chat may read, run or change | The chat runs under **your own Claude Code setup** (or your Codex setup, below): your Claude Code permission rules decide what it may do without asking, exactly as when you use Claude Code yourself, and anything they don't allow shows an **Allow / Deny** card in the chat and waits. Flowhaus doesn't add its own file rules on top. What the chat reads is sent to Anthropic as part of the conversation, as with Claude Code. |
+| The chat creating or running flows | Flowhaus's own flow tools work only in the **builder**, which needs demo flows turned on and a flow built in Flowhaus (or the "new flow" page). While you look at a connected automation, they're off, even if text in a log or source file asks for them. Runs the chat starts are test-mode runs (below). |
 | The chat changing your real automations | Never directly. For automations with `pull_requests: {enabled: true}` it edits a private clone under `state/changes/`, and only source files there. Commit, push and `gh pr create` happen only when you click **Open pull request**; the chat has no tool for it. git hooks are off for those commands. Changes to CI, build and install files are flagged. |
-| Tools from your MCP servers | Flowhaus reads the servers you set up for Claude Code, Claude Desktop or Cursor (never copying their keys) and uses only the ones you switch on. Every call shows an Allow / Deny card and waits, unless your Claude Code permission rules already allow that tool. |
-| Your personal data reaching the model | Run folders (`folder_runs`) and `private_paths` are never readable. For connected automations the chat only gets counts, reasons and errors (`agent_context`), not item tables or file previews. |
+| The chat running on Codex | Codex runs with **your own Codex setup**: your config, sandbox, approval policy, rules and MCP servers decide what it may read, run or change, exactly as when you use Codex yourself. Flowhaus adds its own tools through a local bridge with a per-run token, with the same builder rule and approvals as in the Claude chat. See docs/codex.md. |
+| Tools from your MCP servers | Flowhaus reads the servers you set up for Claude Code, Claude Desktop or Cursor (never copying their keys), and the chat uses only the ones you switch on in Flowhaus (`--strict-mcp-config`). Calls your Claude Code permission rules don't allow show an Allow / Deny card. |
+| What Flowhaus itself hands the chat | For connected automations, Flowhaus's own tools give the chat counts, skip reasons and errors (`agent_context`), not item tables or file previews. What the chat reads beyond that with its own tools is up to your Claude Code or Codex permissions. |
 | A chat reply sending data out | Chat replies can't load images (renderer override plus `Content-Security-Policy: img-src 'self'`). Links only open when you click them. |
 | Your API keys in code the builder writes | Built flows run in a subprocess with a minimal environment (`PATH`, `HOME`, locale, temp dirs). `ANTHROPIC_API_KEY`, `GH_TOKEN` and the rest of your shell's variables are not passed. |
-| Test runs touching production | Built flows run on test items with demo connectors, and their output goes to `state/tests/`. Remote test runs (GitHub, your command, a webhook) need a `test.non_production` statement, shown before every run, plus your confirmation. Flowhaus passes no keys; they run with your own setup. |
+| Test runs touching production | Only a click on **Run** (or `python -m server.runs` in a terminal) is a real run. Everything else runs in **test mode**: Try it, Replay, the test lab, and the chat's runs and re-runs after an edit or undo. Test-mode runs write to `state/tests/` and run inside an operating-system sandbox (`sandbox-exec` on macOS, `bwrap` on Linux): they can write only to their scratch folder and the run record, and can't reach the network, even if a step ignores the folder it's given. `flowhaus doctor` says when this computer has no sandbox. Remote test runs (GitHub, your command, a webhook) need a `test.non_production` statement, shown before every run, plus your confirmation. Flowhaus passes no keys; they run with your own setup. |
 | Switching your GitHub workflows by accident | Off unless `github.allow_toggle: true`. Each switch asks for confirmation in the UI and is logged. |
 
-The chat may read files only:
-- inside this project folder
-- inside the `local_path` of a connected automation, and there only source and config file types
-
-A `local_path` that is your home folder, a disk, or a folder that contains Flowhaus is refused.
-
-Always refused:
-- `~` paths
-- `.git`, `.venv`, `node_modules`, `state/`
-- `.ssh`, `.aws`, `.config`, `.docker`, `.kube`
-- `.env*`
-- keys, certificates, credentials, tokens, password files, `hosts.yml`, `config.json`
-- SQLite and other databases
-
-Path checks ignore letter case (macOS disks do), and search tools check every file they open, without relying on `.gitignore`.
+If you want the chat kept out of certain files or folders (secrets, customer exports, `~/.ssh`), say so in your Claude Code permission rules (`permissions.deny` in `~/.claude/settings.json`, e.g. `Read(./.env)`) or in your Codex sandbox settings. A `local_path` that is your home folder, a disk, or a folder that contains Flowhaus is still refused as an automation's code folder.
 
 ## What is not protected
 
-- **Secrets under unusual names.** The guard recognises secrets by name and folder. A token pasted into an ordinary source file (`settings.py`) inside the project or a connected `local_path` can be read by the chat. Keep secrets in `.env` files or a secret manager, where they belong anyway.
-- **Built flows run real code.** When the builder runs a step, that code runs as you. It doesn't get your API keys, but it can still:
+- **Files your permission rules allow.** The chat can read whatever your Claude Code or Codex setup lets it read, and what it reads goes to the model provider. Deny secrets and personal data there if they're within its reach.
+- **Real runs of built flows run real code.** When you click **Run**, the step code runs as you. It doesn't get your API keys, but it can still:
   - read and write anything your user account can, including `~/.ssh`
   - use your GitHub CLI login (`gh auth token`)
   - use the network
 
-  This is not a sandbox. The builder is off unless you turn on demo flows; only use it where that's acceptable.
-- **Prompt injection.** Text the chat reads could try to steer it: logs, error messages, source files, and pages fetched by connectors. With the builder off it can only read (within the rules above) and answer. Treat its answers about untrusted automations with care.
+  Real runs are not sandboxed (test-mode runs are, see above). The builder is off unless you turn on demo flows; only use it where that's acceptable.
+- **Prompt injection.** Text the chat reads could try to steer it: logs, error messages, source files, and pages fetched by connectors. With the builder off, Flowhaus's own tools can only read and answer; what the chat's own tools may do is up to your permission rules, so keep risky ones (shell, edits) on "ask". Treat its answers about untrusted automations with care.
 - **Remote test runs are only as safe as your test mode.** Flowhaus can't verify that a `dry_run` input really skips publishing. That's what the `non_production` statement is for: read it before you confirm.
 - **Pull requests run CI.** Once you open a pull request, your repository's CI may run its code with the repository's secrets. Read the diff first, and especially the flagged files.
 - **MCP servers** run with your permissions and receive what the chat sends them. Tools you allow without asking run without a question.

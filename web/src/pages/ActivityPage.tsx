@@ -1,11 +1,15 @@
-import { ChevronDown, Loader2, MessageSquarePlus, PencilLine } from "lucide-react";
+import { ChevronDown, Loader2, MessageSquarePlus, PencilLine, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { go } from "@/App";
+import { go } from "@/lib/route";
 import { PageTitle } from "@/components/PageTitle";
 import { api, type ActivityEvent, type FlowCard } from "@/lib/api";
 import { STATUS_STYLE } from "@/lib/status";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+
+const HOUR = 60 * 60 * 1000;
+const WHILE_RUNNING = 10 * 1000;
 
 type Filter = "all" | "problems" | "changes";
 
@@ -17,7 +21,7 @@ type Entry =
 const FILTERS: { id: Filter; label: string; hint: string }[] = [
   { id: "all", label: "All", hint: "Every run and change" },
   { id: "problems", label: "Problems", hint: "Runs that failed" },
-  { id: "changes", label: "Changes", hint: "Flows turned on or off, edits by Claude, apps connected" },
+  { id: "changes", label: "Changes", hint: "Flows turned on or off, edits by the chat, apps connected" },
 ];
 
 /** The API returns separate lines per run (started, skipped items, finished); merge them into one entry. */
@@ -64,18 +68,38 @@ export function ActivityPage({ flowId }: { flowId?: string }) {
     api.flows().then((r) => setFlows(r.flows)).catch(() => {});
   }, []);
 
+  // Read on open, on Refresh, and every hour (both of those read the newest runs from where they run, GitHub
+  // included). While a run is going, look again every 10 seconds until it's done.
+  const [ask, setAsk] = useState({ n: 0, fresh: false });
+  const [loaded, setLoaded] = useState<{ n: number; at: Date; failed: boolean } | null>(null);
+  const refresh = () => setAsk((a) => ({ n: a.n + 1, fresh: true }));
   useEffect(() => {
     let alive = true;
-    const load = () => api.activity(flowId).then((r) => alive && setEvents(r.events)).catch(() => {});
-    load();
-    const t = window.setInterval(load, 5000);
+    api.activity(flowId, ask.fresh).then(
+      (r) => {
+        if (!alive) return;
+        setEvents(r.events);
+        setLoaded({ n: ask.n, at: new Date(), failed: false });
+      },
+      () => alive && setLoaded((l) => ({ n: ask.n, at: l?.at ?? new Date(), failed: true })),
+    );
     return () => {
       alive = false;
-      window.clearInterval(t);
     };
-  }, [flowId]);
+  }, [flowId, ask]);
+  useEffect(() => {
+    const t = window.setInterval(() => setAsk((a) => ({ n: a.n + 1, fresh: true })), HOUR);
+    return () => window.clearInterval(t);
+  }, []);
 
   const entries = useMemo(() => toEntries(events ?? []), [events]);
+  const running = entries.some((e) => e.kind === "run" && e.status === "running");
+  useEffect(() => {
+    if (!running) return;
+    const t = window.setTimeout(() => setAsk((a) => ({ n: a.n + 1, fresh: false })), WHILE_RUNNING);
+    return () => window.clearTimeout(t);
+  }, [running, loaded]);
+  const refreshing = !!loaded && loaded.n !== ask.n && ask.fresh;
   const counts: Record<Filter, number> = {
     all: entries.length,
     problems: entries.filter((e) => e.kind === "run" && e.status === "failed").length,
@@ -114,10 +138,25 @@ export function ActivityPage({ flowId }: { flowId?: string }) {
               </button>
             ))}
           </div>
+          <span className="ml-auto text-xs text-muted-foreground" aria-live="polite">
+            {loaded &&
+              (loaded.failed
+                ? "Couldn't refresh. Is Flowhaus still running?"
+                : `Updated ${loaded.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`)}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={refresh}
+            disabled={refreshing}
+            title="Read the newest runs now (it also refreshes every hour)"
+          >
+            <RefreshCw className={cn(refreshing && "animate-spin")} /> Refresh
+          </Button>
           <select
             value={flowId ?? ""}
             onChange={(e) => go({ page: "activity", flowId: e.target.value || undefined })}
-            className="ml-auto h-8 border border-border bg-card px-3 text-sm"
+            className="h-8 border border-border bg-card px-3 text-sm"
             aria-label="Filter by flow"
           >
             <option value="">All flows</option>

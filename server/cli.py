@@ -81,6 +81,20 @@ def doctor(args) -> int:
             if has_claude else "no ANTHROPIC_API_KEY and no `claude` CLI found",
             "Set ANTHROPIC_API_KEY, or install Claude Code and run `claude` then /login. The map works without chat.",
             required=False)
+    from server import codex_engine
+
+    cx = codex_engine.status()
+    add("chat on Codex", cx["available"] and cx["signed_in"],
+        f"Codex CLI at {cx['path']}, signed in" if cx["available"] and cx["signed_in"] else (cx["why"] or ""),
+        "Only needed if you switch the chat to Codex: npm install -g @openai/codex, then `codex login`.",
+        required=False)
+    from server import runtime
+
+    tool = runtime.sandbox_tool()
+    add("test-mode sandbox", tool is not None,
+        f"{Path(tool).name}: test runs can write only to their scratch folder and have no network" if tool
+        else "not available: test runs still write to a scratch folder, but aren't isolated",
+        "On Linux, install bubblewrap (e.g. apt install bubblewrap).", required=False)
     code, msg = run_cmd("gh", "auth", "status")
     add("GitHub CLI", code == 0, "signed in" if code == 0 else (msg.splitlines() or ["not found"])[-1][:200],
         "Install gh (https://cli.github.com) and run `gh auth login`. Only needed for GitHub Actions automations.",
@@ -258,6 +272,8 @@ def add_github(args) -> int:
                               "github_step": f"{job['name']}/{st['name']}"})
     config = {"type": "github_actions", "name": args.name or args.workflow.rsplit(".", 1)[0].replace("-", " ").capitalize(),
               "description": "TODO: one sentence about what comes out of this automation.",
+              "trigger": {"label": "TODO: when it starts, in words (e.g. Weekdays at 7:00)"},
+              "output": {"label": "TODO: where the results end up (e.g. Emailed to subscribers)"},
               **({"local_path": args.local_path} if args.local_path else {}),
               "github": {"repo": args.repo, "workflow": args.workflow, "allow_toggle": False},
               **({"map": {"steps": steps}} if steps else {})}
@@ -304,6 +320,8 @@ def add_folder(args) -> int:
     name_from = runs_dir.parent if runs_dir.name.lower() in GENERIC else runs_dir
     config = {"type": "folder_runs", "name": args.name or f"TODO: name ({name_from.name})",
               "description": "TODO: one sentence about what comes out of this automation.",
+              "trigger": {"label": "TODO: when it starts, in words (e.g. Weekdays at 7:00)"},
+              "output": {"label": "TODO: where the results end up (e.g. Emailed to subscribers)"},
               "folder_runs": {"path": str(runs_dir), "pattern": pattern, **({"time_format": time_format} if time_format else {}),
                               **({"input": order[0]} if order else {}), **({"output": order[-1]} if len(order) > 1 else {}),
                               **({"log": logs[0]} if logs else {}), "preview_words": 0},
@@ -362,7 +380,8 @@ def check(args) -> int:
             continue
         a = _get(id_)
         problems = a.check()
-        entry = {"id": id_, "ok": not problems, "problems": problems, "runs": 0, "run": None}
+        conventions = a.conventions()
+        entry = {"id": id_, "ok": not problems, "problems": problems, "conventions": conventions, "runs": 0, "run": None}
         try:
             runs = a.list_runs()
             entry["runs"] = len(runs)
@@ -380,7 +399,7 @@ def check(args) -> int:
             for s in a.steps:
                 n = run["nodes"].get(s["id"]) or {}
                 kind = a.config.get("type")
-                has_rules = kind == "python" or any(
+                has_rules = kind == "python" or s.get("kind") in ("decision", "wait", "end") or any(
                     s.get(k) for k in ("in", "out", "skip", "rows", "fail", "produces", "github_step"))
                 missing = "`produces`" if kind == "folder_runs" else "a counting rule (in/out/skip/rows) or `github_step`"
                 n_in, n_out, n_skip = n.get("rows_in"), n.get("rows_out"), n.get("rows_rejected") or 0
@@ -410,13 +429,15 @@ def check(args) -> int:
             entry["harness"] = harness.review(id_)
         except Exception:
             entry["harness"] = None
-        entry["ok"] = not problems
-        bad = bad or bool(problems)
+        entry["ok"] = not problems and not (args.strict and conventions)
+        bad = bad or not entry["ok"]
         report.append(entry)
 
     def fmt(e):
         lines = [f"{'ok' if e['ok'] else '!!'} {e['id']}" + (f"  ({e.get('runs', 0)} runs)" if "runs" in e else "")]
         lines += [f"   problem: {p}" for p in e["problems"]]
+        lines += [f"   convention{' (fails with --strict)' if not args.strict else ''}: {c['message']}. {c['fix']}"
+                  for c in e.get("conventions") or []]
         if e.get("run"):
             r = e["run"]
             lines.append(f"   run {r['run_id']} {r['status']} {r['started_at']}"
@@ -424,13 +445,15 @@ def check(args) -> int:
             if r["error"]:
                 lines.append(f"   error at {r['error'].get('node_id')}: {r['error'].get('message')}")
             for i in e.get("insights") or []:
-                lines.append(f"   note ({i['level']}): {i['title']}. {i['detail']}")
+                lines.append(f"   note ({i['level']}): {i['title']}. {i['detail']}"
+                             + (f"\n      next: {i['next_step']}" if i.get("next_step") else ""))
             for s in r["steps"]:
                 lines.append(f"   - {s['id']:<22} {str(s['status']):<8} in={s['in']} out={s['out']} skipped={s['skipped']}"
                              + (f" {s['reasons']}" if s["reasons"] else "") + (f"   <- {s['warning']}" if s["warning"] else ""))
         h = e.get("harness") or {}
         for f in h.get("findings") or []:
-            lines.append(f"   {'gap' if f['kind'] == 'gap' else 'blind spot'} ({f['level']}): {f['title']}. {f['detail']}")
+            lines.append(f"   {'gap' if f['kind'] == 'gap' else 'blind spot'} ({f['level']}): {f['title']}. {f['detail']}"
+                         + (f"\n      next: {f['next_step']}" if f.get("next_step") else ""))
         for q in h.get("questions") or []:
             lines.append(f"   ask the user: {q['title']}")
         return "\n".join(lines)
@@ -698,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="validate configs and show what the map shows for a run")
     c.add_argument("id", nargs="?")
     c.add_argument("--run")
+    c.add_argument("--strict", action="store_true", help="also fail on writing conventions (for CI)")
     sub.add_parser("list", help="configured automations")
     t = sub.add_parser("test", help="pressure-test an automation in test mode (see docs/testing.md)")
     t.add_argument("id")

@@ -9,7 +9,44 @@ terms: {item: photo, items: photos}
 output: {label: Safe on the backup drive}
 log_file: backup.jsonl             # relative to this folder (or absolute)
 map:
-  steps:
-    - {id: find_new, label: Find new photos, description: "Gives you every photo added since the last backup."}
-    - {id: copy, label: Copy to the drive, description: "Copies each new photo; skips ones that can't be read."}
-    - {id: verify, label: Check the copies, description: "Keeps copies whose checksum matches; flags the rest."}
+  steps:                           # shapes: a decision is a diamond (a choice with 3+ answers), a wait has cut corners, an end is a pill;
+                                   # a line back to an earlier step shows as a "Go back to" marker
+    - id: find_new
+      label: Find new photos
+      description: Gives you every photo added since the last backup.
+      explain: Lists the Photos folder and keeps files whose date is after the last successful backup in the log.
+      example: "IMG_2041.jpg, taken yesterday at 18:02 (4.2 MB)"
+    - id: drive_ok
+      kind: decision
+      label: Backup drive connected?
+      description: Checks that the backup drive is there before copying anything.
+      explain: Looks for the drive named Backup. If it's missing, it waits and looks again, up to three times, before giving up.
+      rule: "The drive named Backup is mounted under /Volumes"
+      branches:                    # three or more answers make a choice: checked top-down, the first that fits wins
+        - {label: "Yes", to: copy}
+        - {label: "Not yet", to: retry, when: "Fewer than 3 tries so far"}
+        - {label: Otherwise, otherwise: true, to: stopped, when: "Still missing after 3 tries; the next night tries again"}
+    - {id: retry, kind: wait, label: Wait and look again, description: "Waits 10 minutes, then checks for the drive again.", next: drive_ok}
+    - id: copy
+      label: Copy to the drive
+      description: Copies each new photo; skips ones that can't be read.
+      explain: Copies each photo into a folder per month on the backup drive, keeping the original file name.
+      example: "IMG_2041.jpg → Backup/2026-10/IMG_2041.jpg"
+    - id: verify
+      label: Check the copies
+      description: Gives you a checksum for every copy, to compare with the original.
+      explain: Reads every copy back from the drive and computes its checksum, the same way as for the original.
+      example: "IMG_2041.jpg: original 9f2c… · copy 9f2c…"
+    - id: all_match
+      kind: decision
+      label: Every copy matches?
+      description: Compares each copy's checksum with the original's.
+      explain: A copy whose checksum differs is incomplete or damaged; those go to review instead of counting as backed up.
+      rule: "Every copy's checksum equals the original's"
+      branches:
+        - {label: "Yes", to: done}
+        - {label: "No", to: review}
+    - {id: review, kind: wait, label: Held for review, description: "Keeps copies that differ aside until you look at them.", next: flagged}
+    - {id: done, kind: end, label: Safe on the backup drive, description: "Every new photo has a checked copy."}
+    - {id: flagged, kind: end, label: "Flagged: copies to look at", description: "Some copies differ from the original."}
+    - {id: stopped, kind: end, label: "Stopped: drive not connected", description: "Nothing was copied this time; the next night tries again."}

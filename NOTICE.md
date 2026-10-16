@@ -10,7 +10,7 @@ Flowhaus is MIT licensed (see LICENSE). It includes or adapts code from these pr
 
 It also depends on these packages, installed separately and not included here:
 - **Python:** see `pyproject.toml`. Among them is [Hamilton](https://github.com/apache/hamilton) (Apache-2.0).
-- **JavaScript:** see `web/package.json`. Among them is [React Flow](https://reactflow.dev) (MIT).
+- **JavaScript:** see `web/package.json`. Among them are [React Flow](https://reactflow.dev) (MIT) and [elkjs](https://github.com/kieler/elkjs) (EPL-2.0), which lays out the flowcharts. elkjs is used unmodified; its source is at that link.
 
 The map hides React Flow's attribution badge (`proOptions.hideAttribution`). React Flow allows this for non-commercial projects. If you use Flowhaus commercially, please consider [React Flow Pro](https://reactflow.dev/pro).
 

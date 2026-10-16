@@ -8,10 +8,12 @@ import {
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Button } from "@/components/ui/button";
-import type { Change } from "@/lib/api";
+import { api, type Change, type NextSteps, type Settings } from "@/lib/api";
 
 import { type ApprovalRequest, ApprovalCard, ProposalCard } from "./ChangeCards";
+import { NextStepCard } from "./NextStepCard";
 import { useTerms } from "@/lib/terms";
+import { cn } from "@/lib/utils";
 
 type ToolStep = { label: string; done: boolean; narration?: boolean };
 type ChatMessage = {
@@ -27,6 +29,8 @@ type ChatMessage = {
   diff?: string;
   proposal?: Change;
   approvals?: ApprovalRequest[];
+  /** Flowhaus's own check of a change the chat made (a replay of the last real run), not the chat's judgement. */
+  check?: { same: boolean; summary: string; examples: string[] };
 };
 
 export type ChatHandle = { ask: (text: string) => void };
@@ -44,6 +48,8 @@ type Props = {
   onClearSelection: () => void;
   onRun: (runId: string, flowId?: string) => void;
   onMapChanged: () => void;
+  /** What to fix first in the run you're looking at (from the page's checkup): the chat's opener. */
+  plan?: NextSteps | null;
 };
 
 const STARTERS_NONE = [
@@ -58,7 +64,7 @@ const STARTERS_SAMPLE = ["Explain this flow in plain English", "What happened in
 
 let nextId = 1;
 
-export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId, onClearSelection, onRun, onMapChanged, onFlowCreated, onBusyChange, onCollapse }: Props) {
+export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId, onClearSelection, onRun, onMapChanged, onFlowCreated, onBusyChange, onCollapse, plan }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -146,6 +152,8 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
             } else if (ev.type === "problems")
               update(assistantId, (m) => ({ ...m, notes: [...m.notes, `Map problems: ${ev.problems.join("; ")}`] }));
             else if (ev.type === "proposal") update(assistantId, (m) => ({ ...m, proposal: ev.change }));
+            else if (ev.type === "check")
+              update(assistantId, (m) => ({ ...m, check: { same: ev.same, summary: ev.summary, examples: ev.examples ?? [] } }));
             else if (ev.type === "approval")
               update(assistantId, (m) => ({
                 ...m,
@@ -187,6 +195,7 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
 
   useImperativeHandle(ref, () => ({ ask: send }), [send]);
 
+
   const undo = () => stream("/api/chat/undo", { run_id: runId }, "Undo the last change");
   const newChat = async () => {
     await fetch("/api/chat/reset", { method: "POST" }).then((r) => r.text());
@@ -213,6 +222,7 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
         <div className="flex items-center gap-2">
           <Sparkles className="size-4" />
           <h2 className="font-semibold">Chat</h2>
+          <EnginePicker disabled={busy} />
         </div>
         <div className="flex gap-1">
           {canUndo && !isSample && (
@@ -235,13 +245,14 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
 
       <Conversation className="min-h-0">
         <ConversationContent className="gap-5">
-          {messages.length === 0 && (
+          {flowId && plan?.first && <div className="pt-4"><NextStepCard plan={plan} onSolve={send} /></div>}
+          {messages.length === 0 && !plan?.first && (
             <div className="space-y-4 pt-6 text-sm">
               <p className="text-muted-foreground">
                 Ask about the flow, or ask for a change in plain English. Select a box on the map first to talk about
                 just that step.
-                {isSample && " This is a sample flow: Claude explains it and proposes changes, but can't apply them yet."}
-                {isConnected && " This is your real automation, shown read-only: Claude can read its code and runs, explain them and propose changes."}
+                {isSample && " This is a sample flow: the chat explains it and proposes changes, but can't apply them yet."}
+                {isConnected && " This is your real automation, shown read-only: the chat can read its code and runs, explain them and propose changes."}
               </p>
             </div>
           )}
@@ -283,7 +294,7 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
                 {m.notes.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {m.notes.map((n, i) => (
-                      <span key={i} className="flex items-center gap-1 px-0 py-0.5 text-[11px] text-emerald-700">
+                      <span key={i} className="flex items-center gap-1 px-0 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-400">
                         <Wrench className="size-3" /> {n}
                       </span>
                     ))}
@@ -299,6 +310,17 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
                     }
                   />
                 ))}
+                {m.check && (
+                  <div className={cn("space-y-1 border-l-2 pl-2.5 text-xs", m.check.same ? "border-emerald-600" : "border-amber-500")}>
+                    <p className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">Checked by Flowhaus</p>
+                    <p>{m.check.summary}</p>
+                    {m.check.examples.map((x) => (
+                      <p key={x} className="text-muted-foreground">
+                        {x}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 {m.proposal && <ProposalCard change={m.proposal} />}
                 {m.error && <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-800 dark:bg-red-950 dark:text-red-200">{m.error}</p>}
               </MessageContent>
@@ -369,7 +391,7 @@ export function ChatPanel({ ref, flowId, isSample, isConnected, selected, runId,
                 abortRef.current?.abort();
               }}
               aria-label="Stop"
-              title="Stop Claude"
+              title="Stop the chat"
             >
               <Square />
             </Button>
@@ -430,3 +452,43 @@ function collapseTools(tools: ToolStep[]): ToolStep[] {
   }
   return out;
 }
+
+
+/** Which agent answers: Claude or Codex. Same tools, same rules; Codex needs its CLI and a sign-in. */
+function EnginePicker({ disabled }: { disabled: boolean }) {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.settings().then(setSettings).catch(() => {});
+  }, []);
+  if (!settings) return null;
+  const codexReady = settings.codex.available && settings.codex.signed_in;
+  const pick = async (engine: "claude" | "codex") => {
+    try {
+      setSettings(await api.setChatEngine(engine));
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <span className="relative flex items-center gap-1 text-xs text-muted-foreground">
+      with
+      <select
+        value={settings.chat_engine}
+        disabled={disabled}
+        onChange={(e) => pick(e.target.value as "claude" | "codex")}
+        className="border border-border bg-background px-1 py-0.5 text-xs text-foreground"
+        aria-label="Which agent runs the chat"
+        title={codexReady ? "Claude and Codex use the same tools and rules" : `Codex: ${settings.codex.why}`}
+      >
+        <option value="claude">Claude</option>
+        <option value="codex" disabled={!codexReady && settings.chat_engine !== "codex"}>
+          Codex{codexReady ? "" : " (not set up)"}
+        </option>
+      </select>
+      {error && <span className="text-red-700 dark:text-red-400">{error}</span>}
+    </span>
+  );
+}
+

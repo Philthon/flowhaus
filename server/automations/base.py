@@ -96,7 +96,8 @@ def group_results(groups: list[dict], steps: list[dict], nodes: dict) -> dict:
 TOP_KEYS = {"id", "type", "name", "description", "trigger", "terms", "input_terms", "output", "next_run", "state_label",
             "local_path", "private_paths", "apps", "map", "summary", "io", "kpis", "module", "pull_requests",
             "test"}
-STEP_KEYS = {"id", "label", "description", "group", "app", "file", "unit"}
+STEP_KEYS = {"id", "label", "description", "group", "app", "file", "unit", "kind", "next", "branches", "rule",
+             "explain", "example"}
 GROUP_KEYS = {"id", "label", "description", "parent"}
 
 
@@ -146,11 +147,11 @@ class Automation:
         }
 
     def get_map(self) -> dict:
-        steps = [{**s, "line": None, "inputs": [], "file": s.get("file")} for s in self.steps]
-        edges = [{"source": a["id"], "target": b["id"]} for a, b in zip(steps, steps[1:])]
+        steps = [{**s, "kind": maps.kind_of(s), "line": None, "inputs": [], "file": s.get("file")} for s in self.steps]
+        edges = maps.chain_edges(steps)
+        problems = (maps.validate(self.groups, steps) if self.groups else []) + maps.path_problems(steps, edges, True, True)
         return {"title": self.meta()["name"], "groups": self.groups, "steps": steps, "edges": edges, "inputs": [],
-                "levels": maps.build_levels(self.groups, steps, edges),
-                "problems": maps.validate(self.groups, steps) if self.groups else []}
+                "levels": maps.build_levels(self.groups, steps, edges), "problems": problems}
 
     # ---- runs --------------------------------------------------------------------------
 
@@ -163,6 +164,10 @@ class Automation:
     def cached_run(self, run_id: str) -> dict | None:
         """Details only if cheap to get (used by the activity feed). Default: same as get_run."""
         return self.get_run(run_id)
+
+    def refresh(self) -> None:
+        """Read the newest runs now (the Refresh button), instead of a recently read list. Default: nothing to do,
+        for adapters that read on every call."""
 
     def freshness(self) -> dict:
         """When the runs shown were read, and whether reading failed. Flowhaus is not a live service:
@@ -202,6 +207,10 @@ class Automation:
                           for nid, n in run["nodes"].items()}},
         }
 
+    def conventions(self) -> list[dict]:
+        """Writing conventions the map doesn't follow yet: warnings, not problems (see maps.conventions)."""
+        return maps.conventions(self.steps, self.groups, self.config)
+
     def check(self) -> list[str]:
         """Problems a human or agent should fix in the config (empty = fine)."""
         problems = []
@@ -212,6 +221,9 @@ class Automation:
         for key in ("name", "description"):
             if "TODO" in str(self.config.get(key) or ""):
                 problems.append(f"`{key}` still has a TODO")
+        for key in ("trigger", "output"):
+            if "TODO" in str((self.config.get(key) or {}).get("label") or ""):
+                problems.append(f"`{key}.label` still has a TODO")
         for g in self.groups:
             if "TODO" in f"{g.get('label')} {g.get('description')}":
                 problems.append(f"Group '{g['id']}' still has a TODO")
@@ -231,6 +243,11 @@ class Automation:
                 problems += unknown_keys(f"step '{s['id']}'", s, STEP_KEYS | self.step_keys)
             for g in (self.config.get("map") or {}).get("groups") or []:
                 problems += unknown_keys(f"group '{g.get('id')}'", g, GROUP_KEYS)
+        # every map has a start (what starts it) and an end (where results go, or explicit end steps), and every
+        # path leads somewhere: see docs/automations.md#the-map
+        problems += maps.path_problems(self.steps, maps.chain_edges(self.steps),
+                                       has_start=bool((self.config.get("trigger") or {}).get("label")),
+                                       has_end=bool((self.config.get("output") or {}).get("label")))
         if self.groups:  # same rules the app uses to draw the map
             problems += [p.replace("flow_map.yaml", "the map").replace("tag", "field")
                          for p in maps.validate(self.groups, self.steps) if "has no 'label'" not in p

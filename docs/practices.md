@@ -70,14 +70,22 @@ The core idea: **an automation is a chain.** Items flow through steps, and every
 | Out of credits or quota | One step fails or skips everything with the same reason; the reason says it |
 | Happy-path-only test data | Changes look fine on the sample but behave differently on real runs; compare with the baseline after merging |
 
-## Conventions
+## Writing conventions
 
-- **Labels** are short verb phrases ("Pick new articles"). **Descriptions** say what you get, not how it works.
-- **Skip reasons** are short, plain and stable. They are grouped and counted, so don't put ids or numbers in them.
-- **Every step names its `file`** in the map, so a change to that file can be traced to its step and everything after it.
-- **One group per stage** a person would name (3 to 6 top-level boxes). Small automations need no groups.
-- **Counting rules and log lines change together.** If a change rewords a log line the map counts, update `automation.yaml` in the same change.
-- **One change at a time.** A pull request does one thing, so its effect on the numbers can be read.
+How a map should read. The ones marked **checked** are tested by `flowhaus check`: it shows them as warnings with the fix, and fails on them only with `--strict` (use that in CI). The rest are judgement, so the harness raises them as findings or leaves them to you.
+
+| Convention | Checked |
+|---|---|
+| **Descriptions start with what you get**: "Gives you…", "Adds…", "Keeps…", "Skips…", not how it works | checked |
+| **Labels are short verb phrases** ("Pick new articles"), 2 to 5 words | checked (over 6 words) |
+| **Plain, simple words.** Assume a reader with a junior software engineer's knowledge: API, JSON, webhook and cron are fine; names from inside the code (DataFrame, node, dict, kwargs) are not | checked (code names) |
+| **Every decision says its rule** in words (`rule:`), and every answer has a label | checked |
+| **Items have a name** (`terms`: lead/leads, invoice/invoices), so every number reads naturally | checked |
+| **Every step names its `file`**, so a change to that file can be traced to its step and everything after it | a finding |
+| **Skip reasons are short, plain and stable.** They're grouped and counted: no ids or numbers in them | |
+| **One group per stage** a person would name (3 to 6 top-level boxes). Small automations need no groups | |
+| **Counting rules and log lines change together.** If a change rewords a log line the map counts, update `automation.yaml` in the same change | flagged in the change review |
+| **One change at a time.** A pull request does one thing, so its effect on the numbers can be read | |
 
 ## Reviewing a change
 
@@ -93,9 +101,29 @@ The chat answers these before it proposes anything, and Flowhaus's automatic rev
 8. **Does it touch CI, workflow, build or install files?** Flowhaus flags them; they run with your repository's secrets.
 9. **How will we know it worked?** Which number should move, and by how much? Flowhaus compares the first run after the merge with the saved baseline.
 
+Each point the review finds has a priority, and only critical ones (P0) hold the pull request back: you confirm them before it opens, and the server refuses it otherwise. Today that's a change to CI, workflow, build or install files, which run with your repository's secrets. Everything else is shown as a suggestion: a log line the map counts (P1), the steps after it, repeated code, files no step points at (P2), and that it's untested (P3). For flows built in Flowhaus, Flowhaus checks the chat's change itself: it replays the last real run with the change, in test mode, and shows what would come out differently.
+
 ## How Flowhaus speaks up
 
-The harness has opinions, but it isn't stubborn. Above the map, next to what the recent runs show, it lists:
+Every finding says **what to do next**, and what that's based on (the log lines, or the numbers): actionable, not only a diagnosis. Every finding also has a priority, on the usual incident scale:
+
+| | | Means | Examples |
+|---|---|---|---|
+| **P0** | Critical | Broken now, or about to do harm | a failed run, an error-level finding, a change to CI files |
+| **P1** | High | Likely wrong, without anyone noticing | items lost without a reason, output sliding, a log line the map counts is edited |
+| **P2** | Medium | Worth improving | no test mode, one reason behind most skips, repeated code |
+| **P3** | Low | Polish | writing conventions, an untested change |
+
+Only P0 ever blocks anything; the rest are suggestions. Where it shows:
+- **The chat's first message** when something is broken: the problem to solve first, why that one, its next step, and a button to solve it with the chat.
+- **The status strip above the map**: the most important thing right now (the failed run, else a map problem, else the top finding) with its next step. It opens the **Review**.
+- **The Review** (a drawer next to the map; button at the top of every flow): everything at once, with priorities, in two tabs.
+  - **Errors:** what's broken in this run, **silent failures** (runs that look fine but aren't, items lost between steps), and what's **changing over recent runs** (output sliding, a step skipping more and more, a new skip reason, slower runs, the same kind of failure again and again).
+  - **Improvements:** ideas from the numbers (one reason behind most skips), and **finishing the setup**: the gaps below, blind spots, the map's problems and conventions, and the questions only you can answer.
+  - The button shows the worst open error: a red warning for a P0, a yellow one otherwise, and a light bulb when there are only improvements. A P0 also turns **Run** red.
+- **A failed step's panel** and **the Flows overview**: the next step next to the error.
+
+The harness has opinions, but it isn't stubborn. It finds:
 
 - **Big picture:** what the automation as a whole is missing against these practices. Examples: no safe test mode, a filter that doesn't count what it skips, a re-run that would publish twice, failures that won't say why.
 - **Blind spots:** what Flowhaus can't see. Examples: steps with no numbers, items that vanish between two steps, code next to the steps that isn't on the map, paid calls nobody counts.

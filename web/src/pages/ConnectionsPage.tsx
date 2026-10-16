@@ -1,12 +1,12 @@
 import { ChevronDown, FlaskConical, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { go } from "@/App";
+import { go } from "@/lib/route";
 import { PageTitle } from "@/components/PageTitle";
 import { api, type Connection, type McpServer } from "@/lib/api";
 import { AppBadge } from "@/lib/apps";
 import { cn } from "@/lib/utils";
-import { timeAgo } from "./FlowsPage";
+import { timeAgo } from "@/lib/time";
 
 export function ConnectionsPage() {
   const [list, setList] = useState<Connection[] | null>(null);
@@ -56,7 +56,7 @@ export function ConnectionsPage() {
           )}
         </header>
 
-        {error && <p className="text-sm text-red-700">{error}</p>}
+        {error && <p className="text-sm text-red-700 dark:text-red-400">{error}</p>}
         {!list && !error && (
           <p className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="size-4 animate-spin" /> Loading…
@@ -168,7 +168,7 @@ function McpServers({ info, onChange }: { info: { servers: McpServer[] }; onChan
       <div>
         <h2 className="text-sm font-medium">Tools for the chat (MCP)</h2>
         <p className="text-xs text-muted-foreground">
-          Found in your Claude Code, Claude Desktop, Cursor and project settings. Flowhaus keeps no copy of them or their keys; switch
+          Found in your Claude Code, Claude Desktop, Cursor, Codex and project settings. Flowhaus keeps no copy of them or their keys; switch
           on the ones the chat may use. It asks you before each call, unless your Claude Code permissions already allow the tool.
         </p>
       </div>
@@ -187,7 +187,8 @@ function McpServers({ info, onChange }: { info: { servers: McpServer[] }; onChan
                   {s.type === "stdio" ? `runs ${s.where} on this computer` : s.where} · from {s.source}
                   {s.allowed_without_asking.length > 0 && <> · no question for {s.allowed_without_asking.join(", ")}</>}
                 </p>
-                {s.problem && <p className="text-xs text-red-800">Can't start: {s.problem}</p>}
+                {s.problem && <p className="text-xs text-red-800 dark:text-red-300">Can't start: {s.problem}</p>}
+                {!s.problem && <ToolList name={s.name} />}
               </div>
               <button
                 role="switch"
@@ -206,7 +207,46 @@ function McpServers({ info, onChange }: { info: { servers: McpServer[] }; onChan
           ))}
         </ul>
       )}
-      {error && <p className="text-xs text-red-800">{error}</p>}
+      {error && <p className="text-xs text-red-800 dark:text-red-300">{error}</p>}
     </section>
   );
 }
+
+
+/** The tools one of your MCP servers offers. It starts the server only when you ask. */
+function ToolList({ name }: { name: string }) {
+  const [state, setState] = useState<"idle" | "loading" | "error" | "done">("idle");
+  const [tools, setTools] = useState<{ name: string; description: string; asks_first: boolean }[]>([]);
+  const [error, setError] = useState("");
+  const load = async () => {
+    setState("loading");
+    try {
+      setTools((await api.mcpTools(name)).tools);
+      setState("done");
+    } catch (e) {
+      setError((e as Error).message);
+      setState("error");
+    }
+  };
+  if (state === "idle")
+    return (
+      <button className="mt-1 text-xs underline underline-offset-2 hover:text-foreground" onClick={load}>
+        Show its tools
+      </button>
+    );
+  if (state === "loading") return <p className="mt-1 text-xs text-muted-foreground">Starting it to ask which tools it has…</p>;
+  if (state === "error") return <p className="mt-1 text-xs text-red-800 dark:text-red-300">{error}</p>;
+  return (
+    <ul className="mt-2 space-y-1 text-xs">
+      {tools.map((t) => (
+        <li key={t.name}>
+          <code className="font-mono">{t.name}</code>
+          <span className="text-muted-foreground"> · {t.asks_first ? "asks you first" : "no question (your Claude Code rules allow it)"}</span>
+          {t.description && <span className="block text-muted-foreground">{t.description.split("\n")[0]}</span>}
+        </li>
+      ))}
+      {tools.length === 0 && <li className="text-muted-foreground">It offers no tools.</li>}
+    </ul>
+  );
+}
+

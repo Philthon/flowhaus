@@ -18,7 +18,7 @@ const HEAT = [
  * Pressure-test a flow, Postman-style: items you write or generate, a run through the whole flow in test mode,
  * and checks on what happened. Test runs never count toward the flow's numbers.
  */
-export function TestLab({ flowId, onOpenRun }: { flowId: string; onOpenRun: (runId: string) => void }) {
+export function TestLab({ flowId, onOpenRun, onAsk }: { flowId: string; onOpenRun: (runId: string) => void; onAsk: (t: string) => void }) {
   const terms = useTerms();
   const [state, setState] = useState<TestLabState | null>(null);
   const [cases, setCases] = useState<TestCase[]>([]);
@@ -105,7 +105,7 @@ export function TestLab({ flowId, onOpenRun }: { flowId: string; onOpenRun: (run
             Run the whole flow on test {terms.items} (yours or generated) and check what happens to each one. Test runs never
             count toward this flow's numbers.
           </p>
-          <p className={cn("text-xs", mode.ready ? "text-muted-foreground" : "text-amber-900")}>
+          <p className={cn("text-xs", mode.ready ? "text-muted-foreground" : "text-amber-900 dark:text-amber-200")}>
             <b>{mode.label}.</b> {mode.ready ? mode.non_production : mode.setup}
           </p>
         </header>
@@ -221,7 +221,7 @@ export function TestLab({ flowId, onOpenRun }: { flowId: string; onOpenRun: (run
                         {result && (
                           <td className="px-2 py-1 text-xs">
                             {r ? (
-                              <span className={cn(r.ok ? "" : "font-medium text-red-700")}>
+                              <span className={cn(r.ok ? "" : "font-medium text-red-700 dark:text-red-400")}>
                                 {r.got}
                                 {r.step && <span className="text-muted-foreground"> at {r.step}</span>}
                                 {r.reason && <span className="text-muted-foreground">: {r.reason}</span>}
@@ -249,10 +249,10 @@ export function TestLab({ flowId, onOpenRun }: { flowId: string; onOpenRun: (run
           <Button onClick={() => (mode.kind === "local" ? run() : setConfirming(true))} disabled={!!busy || !mode.ready || cases.length === 0}>
             {busy === "run" ? <Loader2 className="animate-spin" /> : <Play />} Run test
           </Button>
-          {error && <p className="text-sm text-red-700">{error}</p>}
+          {error && <p className="text-sm text-red-700 dark:text-red-400">{error}</p>}
         </div>
 
-        {result && <Checks result={result} onOpenRun={onOpenRun} />}
+        {result && <Checks result={result} onOpenRun={onOpenRun} onAsk={onAsk} />}
 
         {state.runs.length > 0 && (
           <section className="space-y-1 text-xs text-muted-foreground">
@@ -294,7 +294,7 @@ export function TestLab({ flowId, onOpenRun }: { flowId: string; onOpenRun: (run
   );
 }
 
-function Checks({ result, onOpenRun }: { result: TestRun; onOpenRun: (runId: string) => void }) {
+function Checks({ result, onOpenRun, onAsk }: { result: TestRun; onOpenRun: (runId: string) => void; onAsk: (t: string) => void }) {
   if (result.status === "running")
     return (
       <p className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -317,10 +317,19 @@ function Checks({ result, onOpenRun }: { result: TestRun; onOpenRun: (runId: str
       <ul className="space-y-1 text-sm">
         {result.checks.map((c) => (
           <li key={c.name} className="flex items-start gap-2">
-            {c.ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-700" /> : <XCircle className="mt-0.5 size-4 shrink-0 text-red-700" />}
+            {c.ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-700 dark:text-emerald-400" /> : <XCircle className="mt-0.5 size-4 shrink-0 text-red-700 dark:text-red-400" />}
             <span>
               {c.name}
               {!c.ok && c.detail && <span className="block text-xs text-muted-foreground">{c.detail}</span>}
+              {!c.ok && (
+                <button
+                  type="button"
+                  className="text-xs underline underline-offset-2"
+                  onClick={() => onAsk(`A test check failed: “${c.name}”. ${c.detail ?? ""}\nFind why, and the shortest fix. Don't change anything yet.`)}
+                >
+                  Solve it with the chat
+                </button>
+              )}
             </span>
           </li>
         ))}

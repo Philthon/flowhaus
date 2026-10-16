@@ -1,198 +1,98 @@
 # AGENTS.md
 
-Instructions for coding agents (Claude Code, Codex, Cursor, ...) that set up or work on Flowhaus.
+For coding agents (Claude Code, Codex, Cursor, ...) that set up or work on Flowhaus.
 
-Flowhaus shows automations a person already runs (a GitHub Actions workflow, a script that writes a folder per run, anything with a small adapter) as a **plain-English map**. For every run it shows what came in, what came out, what each step skipped and why, and where a failure happened. A chat panel (Claude Agent SDK) explains runs and proposes changes. Your job during onboarding is to connect the user's automations and write a map that a non-technical person understands.
+Flowhaus shows automations a person already runs (a GitHub Actions workflow, a script that writes a folder per run, anything with a small adapter) as a **plain-English map**, and reviews them against [docs/practices.md](docs/practices.md). Your job during onboarding: connect the user's automations and write a map a non-technical person understands.
 
-## Ground rules (read first)
+## Ground rules
 
-1. **Read-only toward the user's automations.** Never run, deploy, push to, or edit the projects you connect. Running them can cost money or publish things. You only write files under `automations/`.
-2. **Reuse what's set up; store no secrets.** `automation.yaml` holds paths, repo names and regexes, never keys or tokens.
-   - **GitHub** goes through the user's `gh auth login`.
-   - **The chat** uses their Claude Code login or `ANTHROPIC_API_KEY`.
-   - **MCP servers** come from their existing Claude Code / Claude Desktop / Cursor setup.
-   - **Automations** keep their own keys where they already are.
+1. **Read-only toward the user's automations.** Never run, deploy, push to or edit the projects you connect: running them can cost money or publish things. You only write under `automations/` (git-ignored on purpose: don't commit it or move it).
+2. **No secrets in Flowhaus.** `automation.yaml` holds paths, repo names and regexes, never keys. GitHub goes through `gh auth login`, the chat through the user's Claude Code or Codex sign-in, MCP servers through their existing setup. Don't create key files or MCP configs.
+3. **Personal data stays private.** Don't open run outputs (recordings, exports, customer files). File names, sizes and the automation's own log (`flowhaus logs`, a run's `log.txt`) are fine. Keep `preview_words: 0` unless the user asks.
+4. **Ask before:** scanning outside the folders the user named; `github.allow_toggle: true`; adding `local_path` (the chat can then read that code); `pull_requests: {enabled: true}`; switching on MCP servers (`flowhaus mcp enable`); `flowhaus autostart on`; running any remote test.
 
-   Don't create new key files or MCP configs for Flowhaus.
-3. **Personal data stays private.** Don't open run outputs (recordings, exports, customer files) to write a map. You may read:
-   - file names and sizes
-   - the workflow's or script's own log (`flowhaus logs`, a run's `log.txt`), which explains what happened
+## Onboarding
 
-   Set `preview_words: 0` unless the user asks for previews.
-4. **Ask before**:
-   - scanning outside the folders the user named
-   - setting `github.allow_toggle: true` (it lets the app switch the workflow on and off)
-   - adding `local_path` (it lets the in-app chat read that code)
-   - setting `pull_requests: {enabled: true}` (it lets the in-app chat prepare code changes; the user still approves every pull request)
-   - switching on MCP servers for the chat (`uv run flowhaus mcp enable <name>`, [docs/mcp.md](docs/mcp.md))
-5. `automations/` is git-ignored on purpose. Don't commit what you write there, and don't move it elsewhere.
-
-## Onboarding flow
-
-Run everything from the repo root. Every `flowhaus` command accepts `--json`.
-
-### 1. Install and check
+Run from the repo root; every command takes `--json`.
 
 ```bash
-uv sync
-npm --prefix web install
-uv run flowhaus doctor
-```
-
-`doctor` exits 1 if something required is missing and prints the fix. Two checks are optional:
-- **GitHub CLI**: needed only for GitHub Actions automations.
-- **Chat**: needs `ANTHROPIC_API_KEY` or a Claude Code login. The map works without it.
-
-### 2. Find what the user already runs
-
-Ask the user which folders hold their projects, then:
-
-```bash
-uv run flowhaus scan ~/code ~/projects --json
-```
-
-It lists candidates, using paths, names and schedules only:
-- GitHub workflows, with their repo and cron
-- folders with dated run sub-folders
-- crontab entries
-- launchd agents (macOS)
-
-Each candidate has an `add` command. Show the user the list and ask which ones to connect. Without folder arguments it searches the home folder, so ask first.
-
-### 3. Add each automation
-
-```bash
+uv sync && npm --prefix web install
+uv run flowhaus doctor                         # exits 1 with the fix if something required is missing
+uv run flowhaus scan ~/code ~/projects --json  # candidates; ask which folders first, and which to connect
 uv run flowhaus add github-actions <id> --repo owner/name --workflow file.yml [--local-path ~/code/project]
 uv run flowhaus add folder-runs <id> --path /path/to/runs
+uv run flowhaus logs <id> --grep 'fetched|skipped|error'   # lines to count
+uv run flowhaus check <id>                     # repeat until it prints ok
+uv run flowhaus start                          # http://localhost:8765
 ```
 
-These commands write `automations/<id>/automation.yaml`:
-- **github-actions** reads the steps from the latest run.
-- **folder-runs** guesses the steps from the files each run leaves.
+Anything else (cron writing one log, a database of runs, n8n): a `type: python` adapter; copy `examples/automations/backup-log/`.
 
-Both leave `TODO`s for you.
+**Write the map** in `automations/<id>/automation.yaml` (reference: [docs/automations.md](docs/automations.md)). Follow the [writing conventions](docs/practices.md#writing-conventions). In short:
+- `name` (2 to 5 words), `description` (what comes out), `terms` (what one item is called), `trigger.label` and `output.label` (start and end: required).
+- 3 to 6 groups a person would name; every step then has a `group`.
+- Each step:
+  - `label`: a short verb phrase.
+  - `description`: starts with "Gives you…", "Adds…", "Keeps…" or "Skips…".
+  - `explain`: the logic in plain words, written from the code.
+  - `file`: the code behind it.
+  - `app`: the outside service, if any.
+- Decisions get `kind: decision`, a `rule:` and labelled `branches:`. Three or more answers are checked top-down and end with `otherwise: true`. Waits get `kind: wait`, and every path ends somewhere.
+- Write simply, for a reader with a junior engineer's knowledge. API, JSON and webhook are fine; the code's own names (DataFrame, node, dict) aren't.
+- Counting rules (`in` / `out` / `skip` / `rows` / `fail`) match lines the automation already prints. A `fail` rule can say what kind of failure it is (`kind: auth`, `credits`, `transient`, `data`, …), which sharpens the next step Flowhaus suggests. If nothing countable is printed, tell the user and suggest a log line; don't add it yourself (rule 1).
+- `kpis`: the two numbers the user cares about most.
 
-Neither type fits (cron writing one log, a database table of runs, n8n, ...)? Write a `type: python` adapter. Copy `examples/automations/backup-log/` and see [docs/automations.md](docs/automations.md#python-custom-adapter).
+**Verify.** `flowhaus check` fails on config errors, TODOs, rules that match nothing, numbers that don't add up, and unreadable runs. It also shows:
+- **Conventions:** they fail only with `--strict`.
+- **The harness's findings (`gap`, `blind spot`)**, each with a `next:` step. Fix what's yours in `automation.yaml`.
+- **`ask the user:` questions.** Ask them, and record the answers in the app or in `automations/<id>/context.yaml` under `answers:`.
 
-### 4. Write the plain-English map
+Compare the step table with the log, and check a failed run too: its error should name the step and say why.
 
-This is the important part. Edit `automation.yaml` (full reference: [docs/automations.md](docs/automations.md)). Flowhaus is a harness: it reviews automations and changes against [docs/practices.md](docs/practices.md). Read it once, because the map you write is what that review works from. In particular, give every step a `file`, so a change to that file can be traced to its step and everything after it.
+**Test mode** ([docs/testing.md](docs/testing.md)): only if the automation has a real non-production switch (a `dry_run` input, a script flag, an n8n test webhook). Describe it truthfully in `test.non_production`. If there's none, say so; don't invent one.
 
-- **`name`**: what the automation is, in 2 to 5 words, for example "Weekly newsletter digest".
-- **`description`**: one sentence about what comes out. Not how it works.
-- **Groups (3 to 6 top-level boxes):** the stages a person would name, like "Collect articles" or "Send the digest". Once you use groups, every step needs a `group`. An automation with 2 to 4 steps needs no groups: leave `map.groups` out.
-- **Step `label`:** a short verb phrase, for example "Pick new articles".
-- **Step `description`:** says what the step gives you.
-  - Start with "Gives you …", "Adds …", "Keeps …" or "Skips …".
-  - Name the concrete fields, for example: "Adds each page's text from Firecrawl; skips pages that can't be fetched."
-  - No code words (function, API, JSON, regex) unless the user is technical.
-- **`terms`**: what one item is called (`event`/`events`, `invoice`/`invoices`). The UI uses it everywhere.
-- **`app`** on a step: the outside service it talks to (Firecrawl, OpenAI, Slack, ...). It shows as a badge.
-- **`file`** on a step: which source file implements it, relative to `local_path`. It helps the chat answer questions.
-- **`trigger.label`**: when it runs, in words ("Weekdays at 7:00"). Schedules are described automatically, but your wording is better.
-- **`kpis`**: the two numbers the user cares about most, shown on the overview cards, for example `{label: events published, value: "{publish.out}"}`. Without it, the cards show how many items came out and how many runs went fine.
-- **Folder runs:** set `count: rows` (CSV), `lines` or `words` on a step, so the numbers mean items and not files. Point `folder_runs.log` at the script's own log, so failures say why.
+Flowhaus is on-demand and local: it reads when a page asks and sends no alerts. Don't call it monitoring. Without automations, try `FLOWHAUS_AUTOMATIONS_DIR=examples/automations uv run flowhaus start`.
 
-Most of the value comes from the numbers, so for GitHub Actions add counting rules from the log:
+## Common mistakes
 
-```bash
-uv run flowhaus logs <id> --grep 'fetched|skipped|error'
-```
-
-Then add `in` / `out` / `skip` / `rows` / `fail` rules to the steps, plus an optional `summary` line. Match lines the workflow already prints. If it prints nothing countable, say so to the user and suggest adding a log line to their workflow; you can't make that change yourself (rule 1).
-
-### 5. Verify
-
-```bash
-uv run flowhaus check <id>            # latest run
-uv run flowhaus check <id> --run <run_id>
-```
-
-Repeat until it prints `ok`. It fails on any of these:
-- config errors, typos in setting names, and TODOs left
-- steps whose rules matched nothing
-- numbers that don't add up
-- runs that can't be read
-
-It also prints the step table for a real run.
-
-It also prints the harness's big-picture findings (`gap`, `blind spot`) and `ask the user:` questions. These don't fail the check:
-- Fix what is yours to fix in `automation.yaml`, for example missing `kpis` or a `skip` rule.
-- Put the questions to the user. Record their answers in the app, or in `automations/<id>/context.yaml` under `answers:` using the question ids from `--json`.
-
-Compare the numbers with the log. A step showing `in=None out=None` usually means a rule regex didn't match. Check a failed run too, if there is one: the error should name the step that failed and say why in plain words (see `fail` rules).
-
-### 5b. Test mode (optional, ask first)
-
-The test lab ([docs/testing.md](docs/testing.md)) runs an automation on test items without production effects. For automations that run elsewhere, this needs a real non-production switch:
-- a GitHub workflow input like `dry_run`
-- a script flag
-- an n8n test webhook
-
-If one exists, add a `test:` block with `non_production` describing it truthfully, plus `fields` and `examples`. If none exists, don't invent one. Tell the user, and suggest adding it, e.g. a pull request from the in-app chat. Never run a remote test yourself without the user's go-ahead.
-
-### 6. Start the app
-
-```bash
-uv run flowhaus start      # background server with the built UI: http://localhost:8765 (opens the browser)
-uv run flowhaus start --no-open --port 8770   # without a browser, or if 8765 is taken
-uv run flowhaus status     # running? where?
-uv run flowhaus stop
-```
-
-To check it works without a browser: `curl -s localhost:8765/api/flows`. Each configured automation should be listed there. Tell the user to bookmark the URL. If they want it available without starting it, `uv run flowhaus autostart on` (macOS) starts it at login; ask first, because it adds a login item.
-
-Flowhaus is on-demand and local:
-- it reads the automations when a page asks
-- it doesn't watch in the background or send alerts
-
-Don't describe it to the user as monitoring.
-
-Configs are re-read when they change, so there's no restart needed after edits. Give the user the URL. With no automation configured, the Flows page shows an onboarding guide, and new automations appear there by themselves. "Explore demo flows" adds the built-in demos.
-
-For working on Flowhaus itself, use `uv run flowhaus dev` instead (API with reload on :8000, Vite on :5173; `--port` and `--web-port` change them).
-
-### Trying it without your own automations
-
-```bash
-FLOWHAUS_AUTOMATIONS_DIR=examples/automations uv run flowhaus start
-```
-
-Two examples work offline:
-- `invoice-export` (folder runs)
-- `backup-log` (python adapter)
-
-The two GitHub examples point at placeholder repos and show "no runs".
+These happened before; avoid them.
+- **A counting rule that matches nothing**, so the step shows "not run". Copy the exact line from `flowhaus logs`, and mind the escaping in YAML.
+- **Two rules counting the same line**, so in ≠ out + skipped. One line, one rule.
+- **A filtering step without a `skip` rule.** Its drops become silent. If the log says why items are skipped, count it with the reason.
+- **Describing the code instead of the outcome:** "Calls the scrape API" instead of "Adds each page's text; skips pages that can't be fetched".
+- **Inventing a test mode** or a `non_production` claim the automation doesn't have.
+- **Real personal data in `example:`.** Examples are made up.
+- **Opening run outputs** to understand the data. Read the log and the code instead.
+- **(Working on Flowhaus)**
+  - **Wrong words in the UI:** "rows", "node" or "DataFrame". Say "items" or the flow's `terms`.
+  - **Forgetting the sandbox:** only Run is real, and everything else must stay in test mode (`runs.is_test`).
+  - **Changing security-sensitive code without a test.**
 
 ## Working on the code
 
 | Path | What |
 |---|---|
-| `server/app.py` | FastAPI, local only (host + origin checks) |
-| `server/flows.py` | registry of everything shown: connected automations, demo and built flows |
-| `server/automations/` | connected automations: `base.py` (contract), `github_actions.py`, `folder_runs.py`, registry in `__init__.py` |
-| `server/cli.py` | the `flowhaus` command |
-| `server/agent.py` | in-app chat (Claude Agent SDK): tools, file guard (`check_tool_use`), prompts |
-| `server/runs.py`, `runtime.py` | the runner for flows built in the app (Hamilton, in a subprocess with a minimal env) |
+| `server/app.py` | FastAPI, local only (host and origin checks) |
+| `server/flows.py` | everything shown: connected automations, demo and built flows |
+| `server/automations/` | connected automations: `base.py` (contract), `github_actions.py`, `folder_runs.py` |
+| `server/maps.py` | map shapes, paths, conventions |
+| `server/insights.py`, `harness.py`, `review.py`, `nextstep.py`, `checkup.py` | the harness: runs, the big picture, changes, what to do next, the Review |
+| `server/agent.py`, `codex_engine.py` | the in-app chat (Claude Agent SDK, or Codex) |
+| `server/runs.py`, `runtime.py`, `whatif.py` | running flows built in Flowhaus, test mode and its sandbox, Try / Replay |
 | `server/sample_flows.py` | demo flows with generated history |
-| `pipeline/`, `flow_map.yaml` | the built-in "Contact list cleaning" demo |
-| `connectors/` | dummy Clay and Firecrawl (no network) |
-| `web/src` | React 19 + Vite + Tailwind 4 + React Flow. Pages in `pages/`, map in `components/flow/` |
+| `web/src` | React 19, Vite, Tailwind 4, React Flow: pages in `pages/`, map in `components/flow/` |
 
-Checks before you finish a change:
+Run it while you work: `uv run flowhaus dev` (API with reload on :8000, the UI on :5173).
+
+Before you finish a change:
 
 ```bash
-uv run pytest -q
-npm --prefix web run build      # includes the TypeScript check
-npm --prefix web run lint
+uv run pytest -q && npm --prefix web run build && npm --prefix web run lint && npm --prefix web test
 ```
 
 Conventions:
-- **Harness first:** Flowhaus reviews automations and changes against [docs/practices.md](docs/practices.md). Features should help users see downstream effects, keep one source of truth, and prove changes with numbers. `server/review.py` covers changes and `server/insights.py` covers runs.
-- **User-facing text** is plain English, focused on outcomes: what came in, what came out, what was skipped and why. Never say "rows", "DataFrame" or "node" in the UI.
-- **Errors are data:** adapters never raise for a bad run; they return a failed run with a message.
-- **Design:** flat, quiet Bauhaus.
-  - tokens in `web/src/index.css`
-  - hairline borders, no shadows, zero radius
-  - colour only for status
-- **Security-sensitive code** has tests in `tests/test_api.py`, `tests/test_automations.py` and `tests/test_flows_and_connectors.py`. These cover the file guard, the host/origin checks and the step environment. Keep them passing, and add a case when you touch them.
+- **Harness first:** features help people see downstream effects, keep one source of truth, and prove changes with numbers. Every finding says what to do next, not only what's wrong.
+- **UI text:** plain English, about outcomes: what came in, what came out, what was skipped and why.
+- **Errors are data:** adapters return a failed run with a message; they never raise for a bad run.
+- **Design:** flat, quiet Bauhaus (tokens in `web/src/index.css`): hairline borders, no shadows, zero radius, colour only for status. Light and dark.
+- **Security-sensitive code** has tests in `tests/test_api.py`, `test_automations.py`, `test_flows_and_connectors.py`, `test_whatif.py` and `test_pipeline.py` (host and origin checks, the builder rule for the chat's flow tools, the step environment, the test-mode sandbox). Add a case when you touch it.

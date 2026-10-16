@@ -144,7 +144,6 @@ class FolderRunsAutomation(Automation):
             failed_step = self.steps[0]["id"]
         label = next((s["label"] for s in self.steps if s["id"] == failed_step), "")
         finished = max((f.stat().st_mtime for f in files), default=None)
-        out_files = sorted(folder.glob(self.output_glob)) if self.output_glob else []
         message = None
         if failed_step:
             reason = self._log_reason(folder)

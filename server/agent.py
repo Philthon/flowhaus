@@ -6,19 +6,22 @@ single async context), and chat requests are handed to it through a queue.
 The agent gets:
 - `flow` tools (in-process MCP): list/create/update flows, groups, run, validate, inspect;
 - `clay` and `firecrawl` tools (in-process MCP, DUMMY): to explore what the apps return while building;
-- Read/Edit/Write plus guarded file search (find_files/search_files), all checked by `check_tool_use`. No shell.
-  Writing and running code is only possible for flows built in Flowhaus, with the builder (demo mode) on.
+- Claude Code's own tools (Read, Edit, Bash, ...), under the user's own Claude Code settings: their permission rules
+  decide what runs without asking; anything else shows an Allow / Deny card in the chat (`ask_permission`).
+Flowhaus's own tools keep Flowhaus's rules (`check_tool_use`): creating and running flows only for flows built in
+Flowhaus, with the builder (demo mode) on; changes to connected automations go through a change copy and a pull
+request the user opens.
 """
 
 from __future__ import annotations
 
 import asyncio
 import difflib
-import fnmatch
 import hashlib
 import json
 import os
 import re
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +29,8 @@ from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
@@ -43,28 +48,11 @@ ROOT = runtime.ROOT
 FLOWS_DIR = runs.FLOWS_DIR
 MANAGED_GLOBS = ("pipeline/*.py", "flow_map.yaml", "flows/*/flow.yaml", "flows/*/steps/*.py",
                  "flows/*/data/*.csv", "flows/*/data/*.json")
-# Folders never readable, wherever they are (project or a connected automation's code folder).
-NO_READ_PARTS = {"state", ".venv", "venv", ".git", "node_modules", "__pycache__", ".ssh", ".aws", ".gnupg", ".config",
-                 ".docker", ".kube", ".gcloud", ".azure", ".claude"}
-# Not secret, but not worth searching (generated or large).
-WALK_SKIP = {"runs", "output", "dist", "build", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-# Inside a connected automation's code folder, only these kinds of files may be read.
-SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".yaml", ".yml", ".toml", ".md", ".txt",
-                   ".sql", ".sh", ".html", ".css", ".json", ".cfg", ".ini", ".ipynb", ".rb", ".go", ".rs", ".java"}
-SECRET_NAME = re.compile(r"^\.env|^\.netrc$|^\.npmrc$|^\.pypirc$|secret|credential|token|passw|service.?account|"
-                         r"^id_(rsa|ed25519|ecdsa)|\.(pem|key|p12|pfx|keystore|sqlite3?|db)$|(^|[-_.])keys?([-_.]|$)|"
-                         r"^hosts\.ya?ml$|^config\.json$|^auth\.json$", re.I)
-
-
 def read_only_projects() -> list[Path]:
-    """Code folders Claude may read (source files only): connected automations' code, and the private clones
-    made for proposed changes (state/changes/<id>/repo)."""
+    """Code folders added to the chat's workspace: connected automations' code, and the private clones made for
+    proposed changes (state/changes/<id>/repo)."""
     return [*changes.open_workspaces(), *automations.read_only_paths()]
 
-
-def private_dirs() -> list[Path]:
-    """Folders with personal data (recordings, exports, ...): never readable."""
-    return automations.private_paths()
 
 FLOW_ID_RE = re.compile(r"^[a-z][a-z0-9-]{2,40}$")
 
@@ -103,9 +91,11 @@ BE OPINIONATED, NOT STUBBORN (the user's own automations, connected or built her
 - State your view and the reason once; if the user disagrees, go with their call.
 
 FILES
-- Read opens one file; find_files and search_files look around. There is no shell. Secrets, personal data and
-  folders outside the project (or a connected automation's code folder) are blocked; don't try to work around it.
-- Editing files and running flows only works for flows built in Flowhaus, while the user has demo flows turned on.
+- You have your usual tools. The user's own Claude Code permissions decide what you may do without asking; anything
+  else asks them first (an Allow / Deny card). If they deny something, don't retry it; ask what they'd like instead.
+- Never run, deploy or push the user's connected automations, and don't edit their code directly.
+- Creating and running flows (the flow tools) only works for flows built in Flowhaus, while the user has demo flows
+  turned on.
 - For connected automations with pull requests enabled: start_change, edit the private copy, propose_change. The user
   reviews the diff and opens the pull request. Otherwise explain and propose changes in words.
 - Tools from the user's own MCP servers (mcp__<name>__...) ask the user before each call unless they allowed the tool.
@@ -119,7 +109,8 @@ HOW FLOWS ARE STORED
   - steps/*.py: one Hamilton function per step (you write these with Write/Edit).
   - data/*.csv or *.json: sample input items (you write these). A run feeds the file to the first step as `input_path`.
 - The older "contact-cleaning" flow lives in pipeline/*.py with groups in flow_map.yaml (flow_id "contact-cleaning").
-- Sample flows (lead-enrichment, churn-digest, invoice-booking) are read-only demos with made-up history and no code.
+- Sample flows (lead-enrichment, churn-digest, invoice-booking, salesforce-sheet-sync) are read-only demos with made-up
+  history and no code.
 
 HOW A STEP LOOKS (flows/<id>/steps/<name>.py)
     import pandas as pd
@@ -489,124 +480,6 @@ ALL_TOOL_NAMES = ([f"mcp__flow__{t.name}" for t in FLOW_TOOLS]
 
 # --------------------------------------------------------------------------- guardrails
 
-WRITABLE = [
-    re.compile(r"^pipeline/[a-z0-9_]+\.py$"),
-    re.compile(r"^flows/[a-z0-9-]+/steps/[a-z0-9_]+\.py$"),
-    re.compile(r"^flows/[a-z0-9-]+/data/[a-z0-9_.-]+\.(csv|json)$"),
-]
-
-
-def _relative(path: str) -> str | None:
-    """Project-relative, lower-cased path (the Mac disk is case-insensitive), or None if outside."""
-    if not path or path.startswith("~"):
-        return None
-    p = (ROOT / path).resolve() if not os.path.isabs(path) else Path(path).resolve()
-    if p != ROOT and ROOT not in p.parents:
-        return None
-    return str(p.relative_to(ROOT)).lower()
-
-
-def _inside(p: Path, folders: list[Path]) -> Path | None:
-    """The folder that contains p. Case-insensitive: macOS disks are, so RUNS/ must not slip past runs/."""
-    s = str(p).casefold()
-    return next((d for d in folders if s == str(d).casefold() or s.startswith(str(d).casefold().rstrip(os.sep) + os.sep)), None)
-
-
-def _read_denied(path: str, privates: list[Path] | None = None, projects: list[Path] | None = None) -> str | None:
-    """Why reading `path` (a file or a folder to search) is not allowed, or None."""
-    if not path or path.startswith("~") or "\x00" in path:
-        return "Use full paths (no ~)."
-    p = (Path(path) if os.path.isabs(path) else ROOT / path).resolve()
-    if _inside(p, private_dirs() if privates is None else privates):
-        return "That folder holds personal data (recordings, exports, ...) and is off limits."
-    project = _inside(p, read_only_projects() if projects is None else projects)
-    in_root = project is None and _inside(p, [ROOT]) is not None  # a change clone lives under state/ but is code
-    base = ROOT if in_root else project
-    if base is None:
-        return "Stay inside the project folder (or a connected automation's code folder)."
-    rel_parts = Path(str(p)[len(str(base)):].lstrip(os.sep)).parts
-    if any(part.lower() in NO_READ_PARTS for part in rel_parts):
-        return "That folder is off limits."
-    if SECRET_NAME.search(p.name):
-        return "Secret files (.env, keys, credentials, databases) are off limits."
-    if not in_root and not p.is_dir() and p.suffix.lower() not in SOURCE_SUFFIXES:
-        return "In a connected automation's folder you may only read source code and config files."
-    return None
-
-
-def _readable_files(start: str | None, glob: str | None, limit: int):
-    """Files under `start` that the guard lets Claude read, each one checked (no reliance on .gitignore)."""
-    privates, projects = private_dirs(), read_only_projects()
-    root = (Path(start) if start and os.path.isabs(start) else ROOT / (start or "")).resolve()
-    if reason := _read_denied(str(root), privates, projects):
-        raise PermissionError(reason)
-    if root.is_file():
-        yield root
-        return
-    count = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        d = Path(dirpath)
-        dirnames[:] = sorted(n for n in dirnames if n.lower() not in WALK_SKIP and not (d / n).is_symlink()
-                             and _read_denied(str(d / n), privates, projects) is None)
-        for name in sorted(filenames):
-            f = d / name
-            rel = str(f.relative_to(root))
-            if glob and not (fnmatch.fnmatch(rel, glob) or fnmatch.fnmatch(name, glob)):
-                continue
-            if f.is_symlink() or _read_denied(str(f), privates, projects):
-                continue
-            yield f
-            count += 1
-            if count >= limit:
-                return
-
-
-@tool("find_files", "List files you may read. pattern: a glob like '*.py' or 'src/*.ts' (optional). "
-      "path: a folder inside the project or a connected automation's code folder (default: the project).",
-      _schema({"pattern": "string", "path": "string"}, []))
-async def find_files_tool(args: dict) -> dict:
-    try:
-        files = await asyncio.to_thread(lambda: list(_readable_files(args.get("path"), args.get("pattern"), 500)))
-    except PermissionError as exc:
-        return _text(str(exc))
-    return _text("\n".join(str(f) for f in files) or "No readable files match.")
-
-
-@tool("search_files", "Search the text of files you may read. regex: what to look for. glob: limit to files like '*.py' "
-      "(optional). path: folder to search (default: the project).",
-      _schema({"regex": "string", "glob": "string", "path": "string"}, ["regex"]))
-async def search_files_tool(args: dict) -> dict:
-    try:
-        rx = re.compile(args["regex"], re.I)
-    except re.error as exc:
-        return _text(f"Invalid regex: {exc}")
-
-    def run() -> list[str]:
-        hits: list[str] = []
-        for f in _readable_files(args.get("path"), args.get("glob"), 5000):
-            if f.stat().st_size > 1_000_000:
-                continue
-            try:
-                text = f.read_text()
-            except (UnicodeDecodeError, OSError):
-                continue
-            for i, line in enumerate(text.splitlines(), 1):
-                if rx.search(line):
-                    hits.append(f"{f}:{i}: {line.strip()[:300]}")
-                    if len(hits) >= 200:
-                        return hits
-        return hits
-
-    try:
-        hits = await asyncio.to_thread(run)
-    except PermissionError as exc:
-        return _text(str(exc))
-    return _text("\n".join(hits) or "No matches.")
-
-
-FILES_SERVER = create_sdk_mcp_server(name="files", version="1.0.0", tools=[find_files_tool, search_files_tool])
-
-
 def _connected_adapter():
     flow_id = WORKER.current_flow
     if not flow_id or flow_id not in flows.connected():
@@ -629,8 +502,8 @@ async def start_change_tool(args: dict) -> dict:
         return _text(str(exc))
     WORKER.active_change = meta["id"]
     return _text({"folder": str(changes.workspace(meta["id"])), "branch": meta["branch"], "base": meta["base"],
-                  "note": "Edit files under `folder` (Read/Edit/Write, find_files/search_files with path=folder). "
-                          "You can't run anything. When done, call propose_change with a plain-English summary."})
+                  "note": "Edit files under `folder` with your file tools. Don't run anything. When done, call "
+                          "propose_change with a plain-English summary."})
 
 
 def _latest_finished_run(flow_id: str) -> dict | None:
@@ -759,36 +632,12 @@ def builder_allowed() -> bool:
 
 
 def check_tool_use(tool_name: str, tool_input: dict, builder: bool | None = None) -> str | None:
-    """Return a reason to deny the call, or None to allow it."""
-    if builder is None and (tool_name in BUILDER_TOOLS or tool_name in ("Edit", "Write", "MultiEdit")):
-        builder = builder_allowed()
-    if tool_name in BUILDER_TOOLS and not builder:
+    """Flowhaus's rules for its own tools: a reason to deny the call, or None. (Claude Code's own tools follow the
+    user's Claude Code permissions instead, see `ask_permission`.)"""
+    if tool_name in BUILDER_TOOLS and not (builder_allowed() if builder is None else builder):
         return ("Creating, changing or running flows is off here. Connected automations are read-only, and the builder "
                 "only works on flows built in Flowhaus with demo flows turned on.")
-    if tool_name.startswith("mcp__"):
-        return None
-    if tool_name in ("Edit", "Write", "MultiEdit") and (ws := active_workspace()) is not None:
-        target = str(tool_input.get("file_path") or "")
-        # relative paths are relative to the tool's working folder (the project), exactly as the tool resolves them
-        resolved = (Path(target) if os.path.isabs(target) else ROOT / target).resolve()
-        if not target or target.startswith("~") or not _inside(resolved, [ws]):
-            return f"While working on a proposed change you may only edit files in {ws} (use full paths)."
-        return _read_denied(str(resolved))
-    if tool_name in ("Edit", "Write", "MultiEdit"):
-        if not builder:
-            return ("Changing files is off here. For a connected automation with pull requests enabled, call "
-                    "start_change first; otherwise propose the change in words.")
-        rel = _relative(tool_input.get("file_path", ""))
-        if rel is None:
-            return "You may only change files inside the project folder."
-        if rel.endswith("flow.yaml") or rel == "flow_map.yaml":
-            return "Change flow.yaml / flow_map.yaml through create_flow, update_flow and update_group."
-        if not any(p.match(rel) for p in WRITABLE):
-            return "You may only write step code (pipeline/*.py, flows/<id>/steps/*.py) and sample data (flows/<id>/data/)."
-        return None
-    if tool_name == "Read":
-        return _read_denied(str(tool_input.get("file_path") or ""))
-    return f"The {tool_name} tool is not available here."
+    return None
 
 
 APPROVAL_TIMEOUT_S = 600
@@ -845,9 +694,14 @@ async def pre_tool_hook(input_data: dict, tool_use_id: str | None, context: Any)
     name, tool_input = input_data.get("tool_name", ""), input_data.get("tool_input", {}) or {}
     if reason := check_tool_use(name, tool_input):
         return _deny(reason)
-    if mcp.needs_approval(name) and not await ask_user(name, tool_input):
-        return _deny("The user didn't allow this call. Don't retry it; ask what they'd like instead.")
     return {}
+
+
+async def ask_permission(tool_name: str, tool_input: dict, context: Any):
+    """Claude Code asks this when the user's own permission rules don't already allow a tool: Allow / Deny card."""
+    if await ask_user(tool_name, tool_input):
+        return PermissionResultAllow()
+    return PermissionResultDeny(message="The user didn't allow this. Don't retry it; ask what they'd like instead.")
 
 
 # --------------------------------------------------------------------------- snapshots (undo)
@@ -926,14 +780,12 @@ TOOL_LABELS = {
     "Read": "Reading {file_path}",
     "Edit": "Editing {file_path}",
     "Write": "Writing {file_path}",
-    "mcp__files__find_files": "Looking for files",
     "mcp__changes__start_change": "Making a private copy to work on “{title}”",
     "mcp__changes__propose_change": "Preparing the change for your review",
     "mcp__changes__discard_change": "Throwing the change away",
     "mcp__changes__review_change": "Reviewing the change against the map",
     "mcp__changes__downstream_of": "Checking what comes after {node_id}",
     "mcp__changes__remember_context": "Noting: {topic}",
-    "mcp__files__search_files": "Searching the code",
     "mcp__flow__list_flows": "Looking at your flows",
     "mcp__flow__get_map": "Reading the map",
     "mcp__flow__get_node_context": "Looking at {node_id}",
@@ -988,6 +840,44 @@ def _mcp_fingerprint() -> tuple:
     return tuple(sorted((str(f), f.stat().st_mtime_ns) for f in set(files) if f.exists()))
 
 
+
+def replay_check(flow_id: str) -> dict | None:
+    """Flowhaus's own check of a change the chat made, not the chat's: replay the last real run's items through the
+    flow as it is now (test mode, sandboxed) and compare with what that run gave. {same, summary, examples} or None."""
+    from server import whatif
+
+    real = next((r for r in flows.list_runs(flow_id) if r["status"] == "success" and not r.get("test_mode")
+                 and r.get("trigger") != "test"), None)
+    if real is None:
+        return None
+    try:
+        result = whatif.replay(flow_id, real["run_id"])
+    except (KeyError, ValueError):
+        return None
+    c = result.get("compare")
+    failed = next((s for s in result.get("steps") or [] if s["status"] == "failed"), None)
+    if failed:
+        return {"same": False, "summary": f"Replaying the last real run now fails at “{failed['label']}”: {failed['error']}",
+                "examples": []}
+    if not c:
+        return None
+    same = not (c["changed"] or c["now_skipped"] or c["now_kept"])
+    parts = [p for p in (c["changed"] and f"{c['changed']} come out different", c["now_skipped"] and
+                         f"{c['now_skipped']} now skipped", c["now_kept"] and f"{c['now_kept']} now kept") if p]
+    examples = []
+    for x in c.get("examples") or []:
+        if x.get("now"):
+            examples.append(f"{x['item']}: {x['now']}")
+        else:
+            changed = ", ".join(f"{k} {v[0]} → {v[1]}" for k, v in list((x.get("changes") or {}).items())[:2])
+            examples.append(f"{x['item']}: {changed}")
+    return {"same": same,
+            "summary": (f"Replayed the last real run ({c['before']} out then): same result with this change." if same
+                        else f"Replayed the last real run with this change: {c['before']} out then, {c['after']} now; "
+                             + ", ".join(parts) + "."),
+            "examples": examples[:3]}
+
+
 class AgentWorker:
     def __init__(self) -> None:
         self.jobs: asyncio.Queue[Job] | None = None
@@ -1003,6 +893,9 @@ class AgentWorker:
         self.active_change: str | None = None  # change id being edited (see server/changes.py)
         self.mcp_fingerprint: tuple = ()
         self.pending: Job | None = None  # a job held over while the client reconnects
+        self.engine: str = "claude"  # which agent this session runs on (flows.chat_engine)
+        self.codex_thread: str | None = None  # the Codex conversation to resume
+        self.codex_proc: asyncio.subprocess.Process | None = None
 
     def options(self) -> ClaudeAgentOptions:
         external, _ = mcp.load()
@@ -1011,19 +904,20 @@ class AgentWorker:
             system_prompt=SYSTEM_PROMPT,
             cwd=str(ROOT),
             add_dirs=[str(d) for d in read_only_projects() if d.exists()],
-            tools=["Read", "Edit", "Write"],
-            allowed_tools=["Read", "Edit", "Write", "mcp__files__find_files", "mcp__files__search_files",
-                           "mcp__changes__start_change", "mcp__changes__propose_change", "mcp__changes__discard_change",
+            # the user's own Claude Code setup: its tools, and its permission rules decide what runs without asking
+            setting_sources=["user"],
+            # Flowhaus's own tools never ask (its rules apply in pre_tool_hook); anything else follows the user's rules
+            allowed_tools=["mcp__changes__start_change", "mcp__changes__propose_change", "mcp__changes__discard_change",
                            "mcp__changes__review_change", "mcp__changes__downstream_of", "mcp__changes__remember_context",
-                           *ALL_TOOL_NAMES, *(f"mcp__{name}" for name in external)],  # external: asked per call
-            mcp_servers={"flow": FLOW_SERVER, "clay": CLAY_SERVER, "firecrawl": FIRECRAWL_SERVER, "files": FILES_SERVER,
+                           *ALL_TOOL_NAMES],
+            can_use_tool=ask_permission,  # what the user's rules don't allow: an Allow / Deny card in the chat
+            mcp_servers={"flow": FLOW_SERVER, "clay": CLAY_SERVER, "firecrawl": FIRECRAWL_SERVER,
                          "changes": CHANGES_SERVER, **{name: srv["sdk"] for name, srv in external.items()}},
-            permission_mode="acceptEdits",
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool_hook], timeout=APPROVAL_TIMEOUT_S + 30)]},
             include_partial_messages=True,
             enable_file_checkpointing=True,
-            extra_args={"replay-user-messages": None},
-            setting_sources=[],
+            # MCP servers: only the ones switched on in Flowhaus, not every server in the user's Claude Code setup
+            extra_args={"replay-user-messages": None, "strict-mcp-config": None},
             model=os.environ.get("CHAT_MODEL") or None,
             max_turns=60,
         )
@@ -1039,6 +933,9 @@ class AgentWorker:
         await self.jobs.put(job)
 
     async def interrupt(self) -> bool:
+        if self.codex_proc and self.codex_proc.returncode is None and self.busy:
+            self.codex_proc.kill()
+            return True
         if self.client and self.busy:
             await self.client.interrupt()
             return True
@@ -1049,41 +946,53 @@ class AgentWorker:
         while True:
             job: Job | None = None
             try:
-                async with ClaudeSDKClient(self.options()) as client:
-                    self.client = client
-                    while True:
-                        job = self.pending or await self.jobs.get()
-                        self.pending = None
-                        if _mcp_fingerprint() != self.mcp_fingerprint:  # MCP choice or settings changed: reconnect with them
-                            self.pending, job = job, None
-                            break
-                        if job.kind == "reset":
-                            self.active_change = None
-                            self.undo_stack.clear()
-                            self.notes.clear()
-                            job.sink.emit({"type": "done", "reset": True})
-                            job.sink.emit({"type": "end"})
-                            self.busy = False
-                            job = None
-                            break  # reconnect with a fresh session
-                        await self._handle(client, job)
-                        job = None
+                self.engine = flows.chat_engine()
+                if self.engine == "codex":
+                    self.client = None
+                    job = await self._serve(None)
+                else:
+                    async with ClaudeSDKClient(self.options()) as client:
+                        self.client = client
+                        job = await self._serve(client)
             except Exception as exc:  # keep the worker alive; report to whoever is waiting
-                if job is not None:
-                    job.sink.emit({"type": "error", "message": friendly_error(f"The chat agent stopped: {exc}")})
-                    job.sink.emit({"type": "done"})
-                    job.sink.emit({"type": "end"})
+                stuck, self.pending = job or self.pending, None  # e.g. the agent couldn't start: don't leave it hanging
+                if stuck is not None:
+                    stuck.sink.emit({"type": "error", "message": friendly_error(f"The chat agent stopped: {exc}")})
+                    stuck.sink.emit({"type": "done"})
+                    stuck.sink.emit({"type": "end"})
                 self.sink = None
                 self.client = None
                 self.busy = False
                 await asyncio.sleep(1)
 
-    async def _handle(self, client: ClaudeSDKClient, job: Job) -> None:
+    async def _serve(self, client: ClaudeSDKClient | None) -> None:
+        """Handle jobs until the session must restart (reset, engine switch, MCP change). Raises on failure."""
+        assert self.jobs is not None
+        while True:
+            job = self.pending or await self.jobs.get()
+            self.pending = None
+            if flows.chat_engine() != self.engine or (client is not None and _mcp_fingerprint() != self.mcp_fingerprint):
+                self.pending = job  # start a fresh session with the new settings, then handle it
+                return None
+            if job.kind == "reset":
+                self.active_change = None
+                self.codex_thread = None
+                self.undo_stack.clear()
+                self.notes.clear()
+                job.sink.emit({"type": "done", "reset": True})
+                job.sink.emit({"type": "end"})
+                self.busy = False
+                return None  # reconnect with a fresh session
+            await self._handle(client, job)
+
+    async def _handle(self, client: ClaudeSDKClient | None, job: Job) -> None:
         self.sink = job.sink
         self.current_flow = job.flow_id
         try:
             if job.kind == "undo":
                 await self._undo(client, job)
+            elif client is None:
+                await self._codex_chat(job)
             else:
                 await self._chat(client, job)
         except Exception as exc:
@@ -1118,6 +1027,10 @@ class AgentWorker:
                 if msg.is_error and msg.subtype != "error_during_execution":
                     sink.emit({"type": "error", "message": friendly_error(str(msg.result or "The agent hit an error."))})
 
+        await self._after_turn(sink, before, user_uuid)
+
+    async def _after_turn(self, sink: EventSink, before: dict[str, str], user_uuid: str | None) -> None:
+        """What every turn ends with, whichever agent ran it: undo point, map refresh, re-run of changed flows."""
         after = snapshot()
         changed = fingerprint(before) != fingerprint(after)
         if changed:
@@ -1126,6 +1039,36 @@ class AgentWorker:
             sink.emit({"type": "map_changed", "files": files, "diff": unified_diff(before, after)})
             await self._rerun_changed(sink, files, trigger="chat")
         sink.emit({"type": "done", "changed": changed, "can_undo": bool(self.undo_stack)})
+
+    async def _codex_chat(self, job: Job) -> None:
+        """One message on Codex. Its shell is off; it works only through Flowhaus's checked tools (see codex_engine)."""
+        from server import codex_engine
+
+        sink = job.sink
+        st = codex_engine.status()
+        if not st["available"] or not st["signed_in"]:
+            sink.emit({"type": "error", "message": f"The chat is set to Codex, but it can't run here. {st['why']} "
+                                                   "Or switch the chat back to Claude."})
+            sink.emit({"type": "done", "changed": False, "can_undo": bool(self.undo_stack)})
+            return
+        before = snapshot()
+        prompt = self._prompt(job)
+        if not self.codex_thread:  # Codex has no separate system prompt: the instructions open the conversation
+            prompt = f"{SYSTEM_PROMPT}\n\n{CODEX_NOTE}\n\n---\n\n{prompt}"
+        port = os.environ.get("FLOWHAUS_API_PORT", "8000")
+
+        def proc_started(proc: asyncio.subprocess.Process) -> None:
+            self.codex_proc = proc
+
+        thread, error = await codex_engine.run(
+            prompt, self.codex_thread, f"http://127.0.0.1:{port}", CODEX_TOKEN,
+            on_text=lambda t: sink.emit({"type": "text", "text": t}),
+            model=os.environ.get("CODEX_MODEL") or None, on_start=proc_started)
+        self.codex_proc = None
+        self.codex_thread = thread or self.codex_thread
+        if error:
+            sink.emit({"type": "error", "message": friendly_error(error)})
+        await self._after_turn(sink, before, None)
 
     async def _rerun_changed(self, sink: EventSink, files: list[str], trigger: str) -> None:
         """Run every flow whose files changed and that the agent didn't run since, so previews are never stale."""
@@ -1148,8 +1091,10 @@ class AgentWorker:
                 continue  # no input yet
             self.ran_at[flow_id] = flow_fingerprint(flow_id)
             sink.emit({"type": "run", "run_id": run["run_id"], "flow_id": flow_id, "status": run["status"]})
+            if check := await asyncio.to_thread(replay_check, flow_id):
+                sink.emit({"type": "check", "flow_id": flow_id, **check})
 
-    async def _undo(self, client: ClaudeSDKClient, job: Job) -> None:
+    async def _undo(self, client: ClaudeSDKClient | None, job: Job) -> None:
         sink = job.sink
         if not self.undo_stack:
             sink.emit({"type": "text", "text": "There is nothing to undo."})
@@ -1163,7 +1108,7 @@ class AgentWorker:
             sink.emit({"type": "done", "changed": False, "can_undo": bool(self.undo_stack)})
             return
         self.undo_stack.pop()
-        if user_uuid:
+        if user_uuid and client is not None:
             try:
                 await client.rewind_files(user_uuid)
             except Exception:
@@ -1226,9 +1171,8 @@ class AgentWorker:
         context.append(
             "This is the user's REAL, existing automation. It runs on "
             f"{adapter.source_label()} from the code in {adapter.meta()['source']['path'] or '(no local copy configured)'}. "
-            "Each step's 'file' says which code implements it. You may Read, find_files and search_files in that folder "
-            "(source files only; secrets and personal data are blocked). Never run it. Answer in plain English from the "
-            "run data below and the code.")
+            "Each step's 'file' says which code implements it; read it there. Never run it. Answer in plain English from "
+            "the run data below and the code.")
         if changes.settings(adapter) is not None:
             context.append(
                 "CHANGES ARE ENABLED for this automation, through pull requests the user approves. When they ask for a "
@@ -1308,3 +1252,97 @@ async def stream_job(job: Job):
         yield json.dumps(event, default=str) + "\n"
         if event["type"] == "end":
             return
+
+
+# --------------------------------------------------------------------------- the same tools, for the Codex engine
+#
+# When the chat runs on Codex (server/codex_engine.py), Codex works under the user's own Codex setup and reaches
+# Flowhaus's tools through server/codex_bridge.py. Every call lands here and gets the same rules as in the Claude
+# chat: check_tool_use for Flowhaus's own tools, and the Allow / Deny question for the MCP servers switched on here.
+
+CODEX_TOKEN = secrets.token_urlsafe(24)  # given only to the Codex process Flowhaus starts
+CODEX_NOTE = """\
+RUNNING ON CODEX
+- Read and edit files with your own tools; the user's Codex settings decide what you may do. Use the flowhaus tools
+  for flows, runs and changes, and list_connected_tools / use_connected_tool for the MCP servers switched on in
+  Flowhaus.
+- The tool names in these instructions match the flowhaus tools (create_flow, run_flow, start_change, ...); the
+  demo connectors are demo_clay_* and demo_firecrawl_*."""
+_PY_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
+
+
+def _json_schema(schema: dict) -> dict:
+    if schema.get("type") == "object":
+        return schema
+    return {"type": "object", "properties": {k: {"type": _PY_TYPES.get(v, "string") if not isinstance(v, str) else v}
+                                             for k, v in schema.items()}, "required": list(schema)}
+
+
+def _sdk_tools() -> dict[str, tuple[str, Any]]:
+    """{name Codex sees: (name the guard knows, tool)}. Demo connectors are prefixed so their names say what they are."""
+    out: dict[str, tuple[str, Any]] = {}
+    for server, tools in (("flow", FLOW_TOOLS),
+                          ("changes", [start_change_tool, review_change_tool, propose_change_tool, discard_change_tool,
+                                       downstream_of_tool]),
+                          ("clay", [clay_company, clay_person]), ("firecrawl", [fc_scrape, fc_search])):
+        for t in tools:
+            name = f"demo_{server}_{t.name}" if server in ("clay", "firecrawl") else t.name
+            out[name] = (f"mcp__{server}__{t.name}", t)
+    return out
+
+
+CONNECTED_TOOLS = {
+    "list_connected_tools": ("mcp__connected__list", "The tools one of the user's MCP servers offers (servers they "
+                                                     "switched on for the chat).", {"server": "string"}, ["server"]),
+    "use_connected_tool": ("mcp__connected__use", "Call a tool on one of the user's MCP servers. The user is asked "
+                                                  "first unless their own rules allow it.",
+                           {"server": "string", "tool": "string", "arguments": "object"}, ["server", "tool"]),
+}
+
+
+def codex_tools() -> list[dict]:
+    tools = [{"name": n, "description": t.description, "input_schema": _json_schema(t.input_schema or {})}
+             for n, (_, t) in _sdk_tools().items()]
+    tools += [{"name": n, "description": d, "input_schema": _schema(p, req)} for n, (_, d, p, req) in CONNECTED_TOOLS.items()]
+    return tools
+
+
+async def call_codex_tool(name: str, args: dict) -> tuple[str, bool]:
+    """Run one tool for Codex. Returns (text, is_error)."""
+    args = args or {}
+    sdk = _sdk_tools().get(name)
+    if sdk:
+        guard_name, tool_obj = sdk
+        _current_events().emit({"type": "tool", "name": guard_name, "label": tool_label(guard_name, args)})
+        if reason := check_tool_use(guard_name, args):
+            return reason, True
+        result = await tool_obj.handler(args)
+        text = "\n".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+        return text, bool(result.get("is_error"))
+    if name not in CONNECTED_TOOLS:
+        return f"No tool called {name}.", True
+    guard_name = CONNECTED_TOOLS[name][0]
+    # the user's own MCP servers: only those switched on, and calls ask first unless their rules allow them
+    from server import mcp_client
+
+    servers, _ = mcp.load()
+    server = servers.get(str(args.get("server") or ""))
+    if server is None:
+        return f"No MCP server '{args.get('server')}' is switched on for the chat. Switched on: {', '.join(servers) or 'none'}.", True
+    if name == "list_connected_tools":
+        _current_events().emit({"type": "tool", "name": guard_name, "label": f"Looking at {args['server']}'s tools"})
+        try:
+            tools = await mcp_client.list_tools(server["sdk"])
+        except RuntimeError as exc:
+            return str(exc), True
+        return json.dumps([{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]}
+                           for t in tools], indent=1)[:60_000], False
+    tool = str(args.get("tool") or "")
+    full = f"mcp__{args['server']}__{tool}"
+    _current_events().emit({"type": "tool", "name": full, "label": f"Using {tool} on {args['server']}"})
+    if mcp.needs_approval(full) and not await ask_user(full, args.get("arguments") or {}):
+        return "The user didn't allow this call. Don't retry it; ask what they'd like instead.", True
+    try:
+        return await mcp_client.call_tool(server["sdk"], tool, args.get("arguments") or {}), False
+    except RuntimeError as exc:
+        return str(exc), True

@@ -3,6 +3,8 @@
 type: github_actions
 name: Nightly build
 description: Builds and tests the project every night.
+trigger: {label: "Every night at 2:00"}      # the start of the map
+output: {label: "A tested build"}            # the end of the map
 github:
   repo: your-name/your-repo        # owner/name, readable with your `gh auth login`
   workflow: nightly.yml            # file name in .github/workflows/

@@ -10,8 +10,14 @@ import { STATUS_LABEL, STATUS_STYLE, plural } from "@/lib/status";
 import { useTerms } from "@/lib/terms";
 import { cn } from "@/lib/utils";
 import { DiffText } from "./DiffText";
+import { TryIt } from "./TryIt";
+import { Evidence } from "@/components/chat/NextStepCard";
 
 type Props = {
+  /** The longer explanation for the "About" tab. */
+  about?: { explain?: string | null; example?: string | null; file?: string | null; app?: string | null; after: string[] } | null;
+  /** For a decision: the rule it applies and where each answer leads. */
+  decision?: { rule?: string | null; paths: { label: string; to: string; when?: string | null }[] } | null;
   flowId: string;
   inputTerms?: { item: string; items: string };
   hasCode: boolean;
@@ -26,6 +32,10 @@ type Props = {
   onAsk: (text: string) => void;
   onGoToStep: (stepId: string) => void;
   focusRowId: number | null;
+  /** Show the "Test" tab (steps that can be tried on edited items); `connected` ones are predicted by the chat. */
+  tryable?: "run" | "predict" | null;
+  /** Open a tab from outside (the quick view's "Test with different input", or the Test menu); `n` changes on every request. */
+  openTab?: { tab: string; n: number } | null;
 };
 
 const HIDDEN = new Set(["_row_id", "_rejected_reason"]);
@@ -34,7 +44,19 @@ export function PreviewPanel(props: Props) {
   const { flowId, nodeId, runId, refreshKey } = props;
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState("preview");
+  // the tab opened from outside: a flagged item to look at, or a tab asked for by name (which wins); adjusted while
+  // rendering rather than in an effect, so the panel never paints the old tab first
+  const asked = () => props.openTab?.tab ?? (props.focusRowId != null ? "flagged" : null);
+  // null: chosen by the step (Details when it failed, otherwise before → after). Moving to another step goes back to
+  // that, unless you picked a tab of your own (About, Test, App calls), which stays.
+  const [tab, setTab] = useState<string | null>(() => asked());
+  const [seen, setSeen] = useState({ focusRowId: props.focusRowId, nodeId, openTab: props.openTab });
+  if (seen.focusRowId !== props.focusRowId || seen.nodeId !== nodeId || seen.openTab !== props.openTab) {
+    setSeen({ focusRowId: props.focusRowId, nodeId, openTab: props.openTab });
+    const next = props.openTab !== seen.openTab && props.openTab ? props.openTab.tab : props.focusRowId != null ? "flagged" : null;
+    if (next) setTab(next);
+    else if (seen.nodeId !== nodeId && (tab === "preview" || tab === "log" || tab === "flagged")) setTab(null);
+  }
 
   useEffect(() => {
     if (!runId) return;
@@ -47,10 +69,6 @@ export function PreviewPanel(props: Props) {
       alive = false;
     };
   }, [flowId, nodeId, runId, refreshKey]);
-
-  useEffect(() => {
-    if (props.focusRowId != null) setTab("flagged");
-  }, [props.focusRowId, nodeId]);
 
   const status = preview?.status ?? "not_run";
   const flaggedCount = preview?.rows_rejected ?? 0;
@@ -70,13 +88,34 @@ export function PreviewPanel(props: Props) {
             )}
           </div>
           <p className="truncate text-sm text-muted-foreground">{props.description}</p>
+          {props.decision && (
+            <div className="mt-1 space-y-0.5 text-xs">
+              {props.decision.rule && (
+                <p>
+                  <span className="text-muted-foreground">Rule: </span>
+                  {props.decision.rule}
+                </p>
+              )}
+              {props.decision.paths.map((p) => (
+                <p key={p.label + p.to}>
+                  <b className="border border-foreground/20 px-1 font-medium">{p.label}</b> → {p.to}
+                  {p.when && <span className="text-muted-foreground"> ({p.when})</span>}
+                </p>
+              ))}
+            </div>
+          )}
         </div>
         <Button variant="ghost" size="icon" onClick={props.onClose} aria-label="Close details">
           <X />
         </Button>
       </header>
 
-      {!runId ? (
+      {!runId && props.tryable ? (
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <p className="mb-3 text-sm text-muted-foreground">No run yet, so there's no data to show for this step. You can still try it on input you type in.</p>
+          <TryIt key={nodeId} flowId={flowId} stepId={nodeId} label={props.label} start={[]} connected={props.tryable === "predict"} onAsk={props.onAsk} />
+        </div>
+      ) : !runId ? (
         <Empty>Run the flow to see data for this step.</Empty>
       ) : error ? (
         <Empty>{error}</Empty>
@@ -93,6 +132,8 @@ export function PreviewPanel(props: Props) {
                 Skipped <Badge variant="secondary" className="ml-1 bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100">{flaggedCount}</Badge>
               </TabsTrigger>
             )}
+            {props.about && <TabsTrigger value="about">About</TabsTrigger>}
+            {props.tryable && (preview.kind === "step" || preview.kind === "group") && <TabsTrigger value="try">Test</TabsTrigger>}
             {(preview.calls?.length ?? 0) > 0 && (
               <TabsTrigger value="calls">
                 App calls <Badge variant="secondary" className="ml-1">{preview.calls_total ?? preview.calls!.length}</Badge>
@@ -104,11 +145,26 @@ export function PreviewPanel(props: Props) {
           </TabsList>
           <div className="min-h-0 flex-1 overflow-auto">
             <TabsContent value="preview" className="p-3">
-              <ErrorBox preview={preview} isGroup={props.isGroup} onGoToStep={props.onGoToStep} onAsk={props.onAsk} />
               <BeforeAfter preview={preview} isGroup={props.isGroup} />
             </TabsContent>
             <TabsContent value="flagged" className="p-3">
               <Flagged preview={preview} focusRowId={props.focusRowId} />
+            </TabsContent>
+            <TabsContent value="about" className="p-3">
+              {props.about && <About about={props.about} description={props.description} decision={props.decision} />}
+            </TabsContent>
+            <TabsContent value="try" className="p-3">
+              {props.tryable && (
+                <TryIt
+                  key={`${nodeId}-${runId}`}
+                  flowId={flowId}
+                  stepId={nodeId}
+                  label={props.label}
+                  start={preview.sample_in ?? []}
+                  connected={props.tryable === "predict"}
+                  onAsk={props.onAsk}
+                />
+              )}
             </TabsContent>
             <TabsContent value="calls" className="p-3">
               <Calls calls={preview.calls ?? []} total={preview.calls_total ?? 0} credits={preview.credits ?? 0} />
@@ -143,7 +199,7 @@ function ErrorBox({
   const [open, setOpen] = useState(false);
   if (!preview.error) return null;
   return (
-    <div className="mb-3 border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+    <div className="mb-3 border tone-error p-3 text-sm">
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <div className="min-w-0 flex-1 space-y-2">
@@ -151,14 +207,21 @@ function ErrorBox({
             {isGroup && preview.failed_step ? "A step inside failed: " : "This step failed: "}
             {preview.error.message}
           </p>
+          {preview.next_step && (
+            <p>
+              <b className="font-medium">Next step: </b>
+              {preview.next_step}
+            </p>
+          )}
+          <Evidence lines={preview.evidence} unseen={preview.unseen} />
           <div className="flex flex-wrap gap-2">
             {isGroup && preview.failed_step && (
               <Button size="sm" variant="outline" onClick={() => onGoToStep(preview.failed_step!)}>
                 Show the failing step
               </Button>
             )}
-            <Button size="sm" variant="outline" onClick={() => onAsk("Why did this fail, and how can I fix it?")}>
-              <MessageSquare /> Ask chat why
+            <Button size="sm" variant="outline" onClick={() => onAsk(`This step failed: ${preview.error!.message}\nFind the cause from the log and the code, and tell me the shortest fix. Don't change anything yet.`)}>
+              <MessageSquare /> Solve it with the chat
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setOpen((o) => !o)}>
               Technical details <ChevronDown className={cn("transition-transform", open && "rotate-180")} />
@@ -186,7 +249,7 @@ function BeforeAfter({ preview, isGroup }: { preview: Preview; isGroup: boolean 
   const sample_in = preview.sample_in ?? [];
   const sample_out = preview.sample_out ?? [];
   if (!sample_in.length && !sample_out.length) {
-    return <p className="text-sm text-muted-foreground">No rows reached this {isGroup ? "part" : "step"} in this run.</p>;
+    return <p className="text-sm text-muted-foreground">No {terms.items} reached this {isGroup ? "part" : "step"} in this run.</p>;
   }
   const outById = new Map(sample_out.map((r) => [r._row_id, r]));
   const firstStep = !sample_in.length;
@@ -551,11 +614,47 @@ function ItemsView({ preview, flowId, onAsk, inputTerms }: { preview: Preview; f
   );
 }
 
+/** The step explained: what it does, how it decides, an example, its code, and what a change here can reach. */
+function About({ about, description, decision }: { about: NonNullable<Props["about"]>; description: string; decision?: Props["decision"] }) {
+  const row = (label: string, value: React.ReactNode) => (
+    <div className="grid grid-cols-[9rem_1fr] gap-3 border-b border-border py-2 last:border-0">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+  return (
+    <dl className="max-w-3xl text-sm">
+      {row("What it does", about.explain || description)}
+      {about.explain && description && about.explain !== description && row("In short", description)}
+      {decision?.rule && row("Rule", decision.rule)}
+      {decision && decision.paths.length > 0 &&
+        row(
+          "Answers",
+          decision.paths.map((p) => (
+            <p key={p.label + p.to}>
+              <b className="border border-foreground/20 px-1 font-medium">{p.label}</b> → {p.to}
+              {p.when && <span className="text-muted-foreground"> ({p.when})</span>}
+            </p>
+          )),
+        )}
+      {about.example && row("Example", about.example)}
+      {about.app && row("Outside app", about.app)}
+      {about.file && row("Code", <code className="font-mono text-xs">{about.file}</code>)}
+      {row(
+        "A change here can reach",
+        about.after.length ? about.after.join(", ") : <span className="text-muted-foreground">Nothing after it: this is where a path ends.</span>,
+      )}
+    </dl>
+  );
+}
+
 /** Fall back to the first tab if the chosen one isn't shown for this box (e.g. nothing was skipped). */
-function activeTab(tab: string, preview: Preview): string {
+function activeTab(tab: string | null, preview: Preview): string {
+  if (tab === null) return preview.error ? "log" : "preview";
   if (tab === "flagged" && !preview.rows_rejected) return "preview";
   if (tab === "calls" && !(preview.calls?.length ?? 0)) return "preview";
   if (tab === "context") return "log";
+  if ((tab === "about" || tab === "try") && preview.kind !== "step" && preview.kind !== "group") return "preview";
   return tab;
 }
 
@@ -574,7 +673,7 @@ function ReasonList({ reasons, total }: { reasons: [string, number][]; total: nu
           .map(([reason, n]) => (
             <li key={reason} className="grid grid-cols-[1fr_3.5rem_8rem] items-center gap-3 px-3 py-1.5">
               <span>{reason}</span>
-              <span className="text-right tabular-nums text-amber-700">{n}</span>
+              <span className="text-right tabular-nums text-amber-700 dark:text-amber-400">{n}</span>
               <span className="h-1.5 bg-muted" aria-hidden>
                 <span className="block h-full bg-amber-400" style={{ width: `${(100 * n) / max}%` }} />
               </span>

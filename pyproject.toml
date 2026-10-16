@@ -1,6 +1,6 @@
 [project]
 name = "flowhaus"
-version = "0.1.0"
+version = "0.2.0"
 description = "See your automations as a plain-English map: what came in, what came out, what was skipped and why."
 readme = "README.md"
 license = "MIT"
