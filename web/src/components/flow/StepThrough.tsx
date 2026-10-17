@@ -14,13 +14,11 @@ export function StepThrough({
   onStop,
 }: {
   labels: string[];
-  index: number | null;
+  index: number;
   onIndex: (i: number) => void;
   onStop: () => void;
 }) {
-  const playing = index != null;
   useEffect(() => {
-    if (!playing) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target instanceof Element ? e.target : null;
       if (t?.closest("input, textarea, select, [contenteditable=true], [role=menu]")) return;
@@ -32,9 +30,8 @@ export function StepThrough({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [playing, index, labels.length, onIndex, onStop]);
+  }, [index, labels.length, onIndex, onStop]);
 
-  if (!playing) return null;
   return (
     <div className="flex items-center gap-1 border border-foreground/25 bg-background p-1 text-sm" role="group" aria-label="Step through this run">
       <Button variant="ghost" size="icon" disabled={index === 0} onClick={() => onIndex(index - 1)} aria-label="Previous step">

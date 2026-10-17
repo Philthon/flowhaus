@@ -3,14 +3,11 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { api, type Row, type WhatIf } from "@/lib/api";
-import { fieldLabel, fromDrafts, isInternal, toDrafts, type DraftField } from "@/lib/fields";
+import { fieldLabel, fromDrafts, isInternal, showValue, toDrafts, type DraftField } from "@/lib/fields";
 import { useTerms } from "@/lib/terms";
 import { cn } from "@/lib/utils";
 
 const MAX_ITEMS = 5;
-const hidden = isInternal;
-
-const show = (v: unknown) => (v == null || v === "" ? "–" : String(v));
 
 /**
  * "What if this step got these items?" Start from the items it really got in the run you're looking at, change any
@@ -194,7 +191,7 @@ function Outcome({ result, onPredict, onAsk }: { result: WhatIf; onPredict: () =
       </div>
     );
   const out = result.out ?? [];
-  const fields = [...new Set(out.flatMap((r) => Object.keys(r)))].filter((k) => !hidden(k));
+  const fields = [...new Set(out.flatMap((r) => Object.keys(r)))].filter((k) => !isInternal(k));
   return (
     <div className="space-y-3 border-t pt-3">
       <p className="text-xs text-muted-foreground">{result.note}</p>
@@ -240,11 +237,11 @@ function Outcome({ result, onPredict, onAsk }: { result: WhatIf; onPredict: () =
                         {fieldLabel(k)}:{" "}
                         {a == null || a === "" ? (
                           <>
-                            {show(b)} <span className="text-muted-foreground">(new)</span>
+                            {showValue(b)} <span className="text-muted-foreground">(new)</span>
                           </>
                         ) : (
                           <>
-                            <s className="text-muted-foreground">{show(a)}</s> → {show(b)}
+                            <s className="text-muted-foreground">{showValue(a)}</s> → {showValue(b)}
                           </>
                         )}
                       </span>
@@ -277,7 +274,7 @@ function Outcome({ result, onPredict, onAsk }: { result: WhatIf; onPredict: () =
                   <tr key={i} className="border-b border-border/60">
                     {fields.map((k) => (
                       <td key={k} className="px-2 py-1">
-                        {show(r[k])}
+                        {showValue(r[k])}
                       </td>
                     ))}
                   </tr>

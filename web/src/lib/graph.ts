@@ -16,3 +16,21 @@ export function loopEdges(children: string[], edges: { source: string; target: s
   for (const id of [...children.filter((c) => !into.has(c)), ...children]) if (!state.has(id)) visit(id);
   return loops;
 }
+
+/**
+ * The steps after the given ones, following the map's lines, in the order the steps are listed: what a change there
+ * can reach. (The server's `review.downstream` walks the same way.)
+ */
+export function downstreamOf(order: string[], edges: { source: string; target: string }[], start: string[]): string[] {
+  const seen = new Set(start);
+  const queue = [...start];
+  while (queue.length) {
+    const id = queue.shift()!;
+    for (const e of edges)
+      if (e.source === id && !seen.has(e.target)) {
+        seen.add(e.target);
+        queue.push(e.target);
+      }
+  }
+  return order.filter((id) => seen.has(id) && !start.includes(id));
+}

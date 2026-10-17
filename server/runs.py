@@ -205,7 +205,8 @@ def _active_ids(df: pd.DataFrame | None) -> set:
     return set(df.loc[df["_rejected_reason"].isna(), "_row_id"])
 
 
-def _same(a, b) -> bool:
+def same_value(a, b) -> bool:
+    """Two values as an item holds them: empty is empty, 3 and 3.0 are the same (pandas makes ints floats)."""
     a, b = _clean(a), _clean(b)
     return a == b or (a is not None and b is not None and str(a) == str(b))
 
@@ -261,7 +262,7 @@ def compare(before: pd.DataFrame | None, after: pd.DataFrame | None) -> dict:
     changed = []
     if a is not None:
         for rid in before["_row_id"]:
-            if rid in a.index and rid in before_active and any(not _same(cell(b, rid, c), cell(a, rid, c)) for c in visible):
+            if rid in a.index and rid in before_active and any(not same_value(cell(b, rid, c), cell(a, rid, c)) for c in visible):
                 changed.append(rid)
     result["rows_changed"] = len(changed)
 

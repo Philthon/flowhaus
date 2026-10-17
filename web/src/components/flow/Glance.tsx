@@ -2,7 +2,7 @@ import { FlaskConical, Layers } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api, type FlowMap, type Preview, type Row, type Run } from "@/lib/api";
-import { fieldLabel } from "@/lib/fields";
+import { fieldLabel, isInternal, showValue } from "@/lib/fields";
 import { useTerms } from "@/lib/terms";
 
 /**
@@ -20,9 +20,7 @@ function previewOf(flowId: string, nodeId: string, run: Run) {
   return cache.get(key)!;
 }
 
-const hidden = (k: string) => k.startsWith("_");
 const MAX_FIELDS = 4;
-const show = (v: unknown) => (v == null || v === "" ? "–" : String(v));
 
 type Field = { name: string; value: string; before?: string };
 type Sample =
@@ -33,9 +31,9 @@ type Sample =
 
 const fieldsOf = (row: Row): Field[] =>
   Object.keys(row)
-    .filter((k) => !hidden(k) && row[k] != null && row[k] !== "")
+    .filter((k) => !isInternal(k) && row[k] != null && row[k] !== "")
     .slice(0, MAX_FIELDS)
-    .map((k) => ({ name: k, value: show(row[k]) }));
+    .map((k) => ({ name: k, value: showValue(row[k]) }));
 
 function pickSample(p: Preview | null, example?: string | null): Sample | null {
   if (p) {
@@ -45,14 +43,14 @@ function pickSample(p: Preview | null, example?: string | null): Sample | null {
     for (const before of p.sample_in ?? []) {
       const after = outById.get(before._row_id);
       if (!after) continue;
-      const changed = Object.keys(after).filter((k) => !hidden(k) && String(after[k] ?? "") !== String(before[k] ?? ""));
+      const changed = Object.keys(after).filter((k) => !isInternal(k) && String(after[k] ?? "") !== String(before[k] ?? ""));
       if (changed.length)
         return {
           kind: "changed",
           fields: changed.slice(0, MAX_FIELDS).map((k) => ({
             name: k,
-            value: show(after[k]),
-            before: before[k] == null || before[k] === "" ? undefined : show(before[k]),
+            value: showValue(after[k]),
+            before: before[k] == null || before[k] === "" ? undefined : showValue(before[k]),
           })),
         };
     }

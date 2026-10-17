@@ -54,6 +54,23 @@ RULES: list[tuple[str, re.Pattern, str]] = [
      "The code behind “{step}” broke ({kind}). Fix it in {file}; the chat can find the line."),
 ]
 DEFAULT = "Read the log of “{step}” for the cause; the chat can trace it in {file}."
+# Each kind in a sentence ("failed on <label>"), and the fix that stops it coming back (the next step above is for
+# this one failure; this is for a failure that keeps returning, see insights' failure_pattern).
+KIND_LABEL = {"auth": "an expired key or login", "credits": "running out of credits",
+              "transient": "an app not answering or rate limits", "connect": "something not connected",
+              "gone": "something that no longer exists", "file": "missing files", "data": "missing fields",
+              "duplicate": "duplicates", "code": "errors in the code"}
+LASTING_FIX = {
+    "auth": "Move the key to a place that renews (a token that doesn't expire, or a reminder before it does).",
+    "credits": "Raise the plan limit, or add a check that stops early with a clear message when credits run low.",
+    "transient": "Add retries with a growing pause to “{step}”, so a busy app doesn't fail the run.",
+    "connect": "Make the run check for it first and stop with a clear message, or wait and retry.",
+    "gone": "Point “{step}” at something that stays (an id rather than a name), and say so in the error when it's gone.",
+    "file": "Make the step that writes the file finish before “{step}” reads it, or skip with a reason when it's missing.",
+    "data": "Skip items without the field earlier, with a reason, so one item can't fail the run.",
+    "duplicate": "Make “{step}” update instead of create (match on a stable id), so a re-run can't fail on what's there.",
+    "code": "Add a test for the case that breaks “{step}”, then fix it once.",
+}
 # How urgent each kind is (lower first): blockers stop every run until fixed, hiccups often pass by themselves.
 URGENCY = {"auth": 0, "credits": 0, "gone": 0, "code": 0, "connect": 1, "file": 1, "data": 2, "duplicate": 2,
            "other": 2, "transient": 3}

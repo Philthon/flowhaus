@@ -1,16 +1,10 @@
 import { AlertTriangle, ChevronRight, Lightbulb } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { Checkup, ReviewItem } from "@/lib/api";
-import { reviewSignal } from "@/lib/review";
+import type { Checkup } from "@/lib/api";
+import { PRIORITY_BANNER, reviewSignal } from "@/lib/review";
 import { cn } from "@/lib/utils";
 
-const TONE: Record<ReviewItem["priority"], string> = {
-  P0: "tone-error",
-  P1: "tone-warn",
-  P2: "border-border bg-card text-foreground",
-  P3: "border-border bg-card text-foreground",
-};
 
 type Props = {
   review: Checkup | null;
@@ -33,7 +27,7 @@ export function StatusStrip({ review, failure, mapProblems, onShowFailure, onOpe
   const next = failure ? review?.plan?.first?.next_step : top?.next_step;
   if (!failure && !mapProblems.length && !top) return null;
 
-  const tone = failure ? TONE.P0 : mapProblems.length ? TONE.P1 : TONE[top?.priority ?? "P2"];
+  const tone = PRIORITY_BANNER[failure ? "P0" : mapProblems.length ? "P1" : (top?.priority ?? "P2")];
   const Icon = failure || mapProblems.length || top?.priority === "P0" ? AlertTriangle : Lightbulb;
   return (
     <div className={cn("flex items-center gap-3 border-b px-4 py-2 text-sm", tone)} role={failure ? "alert" : undefined}>

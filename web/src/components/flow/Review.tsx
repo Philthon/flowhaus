@@ -5,7 +5,7 @@ import { Evidence } from "@/components/chat/NextStepCard";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, PRIORITY_LABEL, type Checkup, type HarnessQuestion, type ReviewItem } from "@/lib/api";
-import { reviewSignal } from "@/lib/review";
+import { PRIORITY_BAR, PRIORITY_CHIP, reviewSignal, SIGNAL_COLOR } from "@/lib/review";
 import { cn } from "@/lib/utils";
 
 type Key = keyof Pick<Checkup, "fix_now" | "silent" | "drift" | "ideas" | "setup">;
@@ -14,7 +14,6 @@ const ERRORS: { key: Key; title: string }[] = [
   { key: "silent", title: "Silent failures" },
   { key: "drift", title: "Changing over recent runs" },
 ];
-const ERROR_TONE = { error: "text-red-600", warn: "text-amber-500", idea: "text-muted-foreground", none: "text-muted-foreground" };
 const IMPROVEMENTS: { key: Key; title: string }[] = [{ key: "ideas", title: "Ideas from the numbers" }];
 
 type Props = {
@@ -78,7 +77,7 @@ export function ReviewPanel({ flowId, review, loading, onReload, onClose, onShow
       <Tabs value={tab} onValueChange={(v) => setPicked(String(v))} className="flex min-h-0 flex-1 flex-col gap-0">
         <TabsList variant="line" className="mx-3 mt-1 shrink-0">
           <TabsTrigger value="errors">
-            <AlertTriangle className={ERROR_TONE[reviewSignal(review).tone]} />
+            <AlertTriangle className={errors ? SIGNAL_COLOR[reviewSignal(review).tone] : "text-muted-foreground"} />
             Errors <span className="tabular-nums text-muted-foreground">{errors}</span>
           </TabsTrigger>
           <TabsTrigger value="improvements">
@@ -138,14 +137,6 @@ export function TextLink({ onClick, children }: { onClick: () => void; children:
   );
 }
 
-// how urgent, by colour and by text (P0..P3), so it doesn't rest on colour alone
-const BAR: Record<ReviewItem["priority"], string> = { P0: "border-red-500", P1: "border-amber-500", P2: "border-border", P3: "border-border" };
-const CHIP: Record<ReviewItem["priority"], string> = {
-  P0: "border-red-500 text-red-700 dark:text-red-300",
-  P1: "border-amber-500 text-amber-800 dark:text-amber-300",
-  P2: "border-border text-muted-foreground",
-  P3: "border-border text-muted-foreground",
-};
 
 function Row({ item, onAsk, onShowStep, onDismiss }: {
   item: ReviewItem;
@@ -156,10 +147,10 @@ function Row({ item, onAsk, onShowStep, onDismiss }: {
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState("");
   return (
-    <li className={cn("space-y-1 border-l-2 pl-3", BAR[item.priority])}>
+    <li className={cn("space-y-1 border-l-2 pl-3", PRIORITY_BAR[item.priority])}>
       <p className="flex items-start gap-2 font-medium">
         <span
-          className={cn("mt-0.5 shrink-0 border px-1 font-mono text-[10px] leading-4", CHIP[item.priority])}
+          className={cn("mt-0.5 shrink-0 border px-1 font-mono text-[10px] leading-4", PRIORITY_CHIP[item.priority])}
           title={`${item.priority}: ${PRIORITY_LABEL[item.priority]}`}
         >
           {item.priority}

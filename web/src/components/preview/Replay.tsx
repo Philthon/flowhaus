@@ -3,11 +3,10 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { api, type WhatIf } from "@/lib/api";
-import { fieldLabel } from "@/lib/fields";
+import { fieldLabel, showValue } from "@/lib/fields";
 import { useTerms } from "@/lib/terms";
 import { cn } from "@/lib/utils";
 
-const show = (v: unknown) => (v == null || v === "" ? "–" : String(v));
 
 /**
  * A past run replayed in test mode: its items go through the flow as it is now, and what comes out is compared with
@@ -102,7 +101,7 @@ export function ReplayPanel({ flowId, runId, onClose, onAsk }: { flowId: string;
                           Object.entries(x.changes ?? {}).map(([k, [a, b]], j) => (
                             <span key={k}>
                               {j > 0 && " · "}
-                              {fieldLabel(k)}: <s className="text-muted-foreground">{show(a)}</s> → {show(b)}
+                              {fieldLabel(k)}: <s className="text-muted-foreground">{showValue(a)}</s> → {showValue(b)}
                             </span>
                           ))}
                       </li>

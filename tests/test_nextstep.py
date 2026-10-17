@@ -100,3 +100,8 @@ def test_the_latest_run_means_the_latest_real_run(monkeypatch):
     monkeypatch.setattr(nextstep.flows, "get_run", lambda flow_id, run_id: seen.append(run_id) or None)
     nextstep.problems("salesforce-sheet-sync", None, found_insights=[], review={})
     assert seen == ["real"]
+
+
+def test_every_kind_of_failure_has_words_and_a_lasting_fix():
+    kinds = set(nextstep.KINDS) - {"other"}
+    assert kinds == set(nextstep.KIND_LABEL) == set(nextstep.LASTING_FIX)
