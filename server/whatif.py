@@ -198,7 +198,8 @@ def replay(flow_id: str, run_id: str) -> dict:
     if kind == "connected":
         return {"mode": "predict", "note": "This automation runs where it lives, so Flowhaus can't replay it here. "
                 "If it has a test mode, use Test it; or ask the chat what this run would give now."}
-    items = run.get("input_items") or []
+    # items the first step skipped back then didn't go on: they don't go on now either
+    items = [it for it in run.get("input_items") or [] if not it.get("_rejected_reason")]
     if not items:
         raise ValueError("This run didn't keep the items that came in, so it can't be replayed.")
     fmap = flows.get_map(flow_id)
@@ -208,13 +209,28 @@ def replay(flow_id: str, run_id: str) -> dict:
     start = next(iter(_after(fmap, first)), None)
     if start is None:
         raise ValueError("This flow has only one step, so there's nothing to replay after it.")
-    steps, after = _execute(flow_id, fmap, start, _numbered(items, MAX_REPLAY), True)
+    sent = _numbered(items, MAX_REPLAY)
+    steps, after = _execute(flow_id, fmap, start, sent, True)
     label = next((s.get("label") or s["id"] for s in fmap["steps"] if s["id"] == first), first)
     result = {"mode": "run", "step": start, "steps": steps, "out": _final(after)[:MAX_ITEMS],
               "note": f"Replayed {min(len(items), MAX_REPLAY)} items from \u201c{label}\u201d through the flow as it is now. {NOTE}"}
     if run.get("output_items") is not None and not any(s["status"] == "failed" for s in steps):
-        result["compare"] = _compare(run["output_items"], after)
+        result["compare"] = _compare(*_comparable(run["output_items"], after, sent))
     return result
+
+
+def _comparable(before: list[dict], after: list[dict], sent: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Only what both sides saw. A run keeps at most MAX_IO_ITEMS items in and out, and a replay sends at most
+    MAX_REPLAY: an item that wasn't replayed, or that came out past where the run's record stops, isn't a difference."""
+    from server import runs
+
+    order = {it["_row_id"]: n for n, it in enumerate(sent)}
+    cut_off = len(before) >= runs.MAX_IO_ITEMS
+    before = [r for r in before if r.get("_row_id") in order]
+    if cut_off and before:
+        last = max(order[r["_row_id"]] for r in before)  # the run's record stops here
+        after = [r for r in after if order.get(r.get("_row_id"), len(order)) <= last]
+    return before, after
 
 
 def _sample(flow_id: str, order: list[str], rows: list[dict], labels: dict) -> list[dict]:

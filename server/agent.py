@@ -631,12 +631,49 @@ def builder_allowed() -> bool:
         return False
 
 
+# Claude Code's file tools and the input that names the file or folder they touch
+FILE_TOOLS = {"Read": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "Write": "file_path",
+              "NotebookEdit": "notebook_path", "Grep": "path", "Glob": "path"}
+EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
+
+
+def _resolve(raw: str | None) -> Path:
+    p = Path(raw).expanduser() if raw else ROOT
+    return (p if p.is_absolute() else ROOT / p).resolve()
+
+
+def _within(path: Path, folder: Path) -> bool:
+    return path == folder or folder in path.parents
+
+
 def check_tool_use(tool_name: str, tool_input: dict, builder: bool | None = None) -> str | None:
-    """Flowhaus's rules for its own tools: a reason to deny the call, or None. (Claude Code's own tools follow the
-    user's Claude Code permissions instead, see `ask_permission`.)"""
+    """Flowhaus's rules: a reason to deny the call, or None. Everything else follows the user's own Claude Code
+    permission rules (`ask_permission`). Flowhaus adds only what its docs promise:
+
+      - its flow tools work only in the builder
+      - `private_paths`, and a folder-runs automation's run outputs, are never read (personal data)
+      - a connected automation's real code is never edited: changes go to the private copy (`start_change`)
+    """
     if tool_name in BUILDER_TOOLS and not (builder_allowed() if builder is None else builder):
         return ("Creating, changing or running flows is off here. Connected automations are read-only, and the builder "
                 "only works on flows built in Flowhaus with demo flows turned on.")
+    key = FILE_TOOLS.get(tool_name)
+    if key is None:
+        return None
+    target = _resolve(tool_input.get(key))
+    private = [p.resolve() for p in automations.private_paths()]
+    if any(_within(target, p) for p in private):
+        return ("That folder is private (personal data: an automation's run outputs or its `private_paths`). Work from "
+                "the counts, skip reasons and log lines Flowhaus's own tools give you.")
+    if tool_name in ("Grep", "Glob") and any(_within(p, target) for p in private):
+        return "That search would include a private folder (run outputs or `private_paths`). Search a narrower folder."
+    if tool_name in EDIT_TOOLS:
+        workspace = active_workspace()
+        if workspace and _within(target, workspace):
+            return None
+        if any(_within(target, p.resolve()) for p in automations.read_only_paths()):
+            return ("A connected automation's code is read-only here. To change it, start a change (start_change) and "
+                    "edit the private copy; the user opens the pull request.")
     return None
 
 
@@ -1041,7 +1078,8 @@ class AgentWorker:
         sink.emit({"type": "done", "changed": changed, "can_undo": bool(self.undo_stack)})
 
     async def _codex_chat(self, job: Job) -> None:
-        """One message on Codex. Its shell is off; it works only through Flowhaus's checked tools (see codex_engine)."""
+        """One message on Codex, under the user's own Codex setup: its sandbox and approval policy decide what its
+        shell and file edits may do. Flowhaus's own tools reach it through the bridge, with Flowhaus's rules."""
         from server import codex_engine
 
         sink = job.sink
@@ -1283,7 +1321,7 @@ def _sdk_tools() -> dict[str, tuple[str, Any]]:
     out: dict[str, tuple[str, Any]] = {}
     for server, tools in (("flow", FLOW_TOOLS),
                           ("changes", [start_change_tool, review_change_tool, propose_change_tool, discard_change_tool,
-                                       downstream_of_tool]),
+                                       downstream_of_tool, remember_context_tool]),
                           ("clay", [clay_company, clay_person]), ("firecrawl", [fc_scrape, fc_search])):
         for t in tools:
             name = f"demo_{server}_{t.name}" if server in ("clay", "firecrawl") else t.name
@@ -1316,7 +1354,10 @@ async def call_codex_tool(name: str, args: dict) -> tuple[str, bool]:
         _current_events().emit({"type": "tool", "name": guard_name, "label": tool_label(guard_name, args)})
         if reason := check_tool_use(guard_name, args):
             return reason, True
-        result = await tool_obj.handler(args)
+        try:
+            result = await tool_obj.handler(args)
+        except Exception as exc:  # errors are data: Codex gets the error, not "Flowhaus didn't answer"
+            return f"{name} failed: {type(exc).__name__}: {exc}", True
         text = "\n".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
         return text, bool(result.get("is_error"))
     if name not in CONNECTED_TOOLS:

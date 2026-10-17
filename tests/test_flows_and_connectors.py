@@ -63,8 +63,29 @@ def test_skip_where_keeps_existing_reasons():
     ("mcp__clay__enrich_company", {"domain_or_email": "x.io"}),
 ])
 def test_claude_codes_own_tools_follow_the_users_setup(tool, inp):
-    """Flowhaus doesn't police Claude Code's own tools: the user's Claude Code permissions do (see ask_permission)."""
+    """Outside its two promises (below), Flowhaus leaves Claude Code's own tools to the user's permissions."""
     assert check_tool_use(tool, inp, builder=False) is None
+
+
+def test_private_folders_are_never_read_and_real_code_never_edited(tmp_path, monkeypatch):
+    """The two promises Flowhaus keeps on top of the user's Claude Code rules: personal data (run outputs,
+    `private_paths`) is never read, and a connected automation's real code is changed only through the copy."""
+    from server import agent, automations
+
+    code, runs_dir, copy = tmp_path / "recorder", tmp_path / "recorder" / "runs", tmp_path / "copy"
+    for d in (runs_dir, copy):
+        d.mkdir(parents=True)
+    monkeypatch.setattr(automations, "private_paths", lambda: [runs_dir])
+    monkeypatch.setattr(automations, "read_only_paths", lambda: [code])
+    monkeypatch.setattr(agent, "active_workspace", lambda: copy)
+    assert check_tool_use("Read", {"file_path": str(runs_dir / "2026-10-01" / "transcript.txt")})
+    assert check_tool_use("Grep", {"pattern": "x", "path": str(code)})  # the search would reach the run outputs
+    assert check_tool_use("Edit", {"file_path": str(code / "main.py")})
+    assert check_tool_use("Read", {"file_path": str(code / "main.py")}) is None  # reading the code is fine
+    assert check_tool_use("Grep", {"pattern": "x", "path": str(code / "src")}) is None
+    assert check_tool_use("Edit", {"file_path": str(copy / "main.py")}) is None  # the change copy is where edits go
+    monkeypatch.setattr(agent, "active_workspace", lambda: None)
+    assert check_tool_use("Write", {"file_path": str(code / "new.py")})
 
 
 @pytest.mark.parametrize("tool,inp", [

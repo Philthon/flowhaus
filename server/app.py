@@ -284,12 +284,12 @@ def get_preview(node_id: str, run_id: str | None = None, flow_id: str = flows.LI
 
 def _next_step(flow_id: str, step_id: str, node: dict) -> dict:
     """For a failed step: what to do first, and what that's based on (actionable, not only "it failed")."""
-    message = (node.get("error") or {}).get("message")
-    if node.get("status") != "failed" or not message:
+    error = node.get("error") or {}
+    if node.get("status") != "failed" or not error.get("message"):
         return {}
     step = next((s for s in _flow_map(flow_id)["steps"] if s["id"] == step_id), None)
     seen, unseen = nextstep.evidence(node, None)
-    return {"next_step": nextstep.next_step(message, step), "evidence": seen, "unseen": unseen}
+    return {"next_step": nextstep.next_step_for(error, step), "evidence": seen, "unseen": unseen}
 
 
 def _io_preview(run: dict, output: bool, flow_id: str) -> dict:

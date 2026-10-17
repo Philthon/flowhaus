@@ -280,7 +280,9 @@ def _ideas(flow_id: str, runs: list[dict], labels: dict, items: str) -> list[dic
     failed = [r for r in runs[:10] if r["status"] == "failed" and r.get("error")]
     kinds: dict[tuple, int] = {}
     for r in failed:
-        key = (nextstep.classify(r["error"].get("message") or ""), r["error"].get("node_id"))
+        declared = r["error"].get("kind")  # a `fail` rule's kind wins over guessing from the words
+        key = (declared if declared in nextstep.KINDS else nextstep.classify(r["error"].get("message") or ""),
+               r["error"].get("node_id"))
         kinds[key] = kinds.get(key, 0) + 1
     for (kind, sid), n in kinds.items():
         if n >= 2 and kind != "other":

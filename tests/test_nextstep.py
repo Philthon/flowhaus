@@ -76,3 +76,27 @@ def test_a_failed_step_and_its_overview_card_say_what_to_do():
     ok = next(r for r in sample_flows.history("salesforce-sheet-sync") if r["status"] == "success")
     p = local.get("/api/nodes/upsert_contact/preview", params={"flow_id": "salesforce-sheet-sync", "run_id": ok["run_id"]}).json()
     assert "next_step" not in p  # nothing to do for a step that went fine
+
+
+def test_next_steps_read_cleanly():
+    assert nextstep.next_step("The connection to the reporting Postgres database is offline", None) == \
+        "Connect the reporting Postgres database, then run it again."
+    assert nextstep.next_step("VPN is not connected", None).startswith("Connect the VPN")
+    # a declared kind picks its rule that fits the message: a timeout isn't a rate limit
+    assert "didn't answer" in nextstep.next_step("Read timed out after 30s", None, "transient")
+    assert nextstep.next_step_for({"message": "channel_not_found", "kind": "auth"}, None) == \
+        nextstep.next_step("channel_not_found", None, "auth")
+
+
+def test_evidence_without_an_error_message_keeps_the_log_lines():
+    assert nextstep.evidence({}, {"log": [{"level": "error", "text": "HTTP 401"}]}) == (["HTTP 401"], None)
+
+
+def test_the_latest_run_means_the_latest_real_run(monkeypatch):
+    real = {"run_id": "real", "status": "success"}
+    monkeypatch.setattr(nextstep.flows, "list_runs", lambda flow_id: [{"run_id": "test", "status": "failed"}, real])
+    monkeypatch.setattr(nextstep.flows, "production_runs", lambda flow_id, rs: [r for r in rs if r["run_id"] != "test"])
+    seen = []
+    monkeypatch.setattr(nextstep.flows, "get_run", lambda flow_id, run_id: seen.append(run_id) or None)
+    nextstep.problems("salesforce-sheet-sync", None, found_insights=[], review={})
+    assert seen == ["real"]

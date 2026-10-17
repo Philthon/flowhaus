@@ -29,7 +29,7 @@ Working examples are in [`examples/automations/`](../examples/automations).
 | `next_run` | no | Text for "next run" when it can't be computed. |
 | `state_label` | no | Text for the on/off state when it can't be read. |
 | `local_path` | no | The automation's own code folder. The in-app chat may **read** source files there, never write. `~` is expanded. |
-| `private_paths` | no | Folders (absolute, or relative to `local_path`) the chat must never read. Run folders of `folder_runs` are always private. |
+| `private_paths` | no | Folders (absolute, or relative to `local_path`) the chat must never read. Run folders of `folder_runs` are always private. (Enforced for the Claude chat; for Codex, see [codex.md](codex.md).) |
 | `apps` | no | Text for the Apps page: `{Mailgun: {does: "Sends the email.", connected: "Key in the repo's GitHub secrets"}}` |
 | `summary` | no | One line per run: `"{fetch.out} pages read → {publish.out} published"`. Placeholders: `{<step>.in}`, `{<step>.out}`, `{<step>.skipped}`. Left out when a value is missing. |
 | `kpis` | no | Up to two numbers for the overview cards: `[{label: events published, value: "{publish.out}"}, {label: skipped, value: "{filter.skipped}", good: down}]`. They are taken from the last finished run and compared with the run before. `good: down` means a drop is good news. Default: items out of the last run, and runs that went fine in the last 7 days. |

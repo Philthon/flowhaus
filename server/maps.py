@@ -147,6 +147,25 @@ def chain_edges(steps: list[dict]) -> list[dict]:
     return edges
 
 
+def always_reached(steps: list[dict], edges: list[dict]) -> set[str]:
+    """Steps every run reaches: from the first step, along lines that don't go through a decision's answers. A step
+    only one answer leads to (or that comes after one) may rightly not run."""
+    kinds = {s["id"]: kind_of(s) for s in steps}
+    out: dict[str, list[dict]] = {}
+    for e in edges:
+        out.setdefault(e["source"], []).append(e)
+    seen: set[str] = set()
+    todo = [steps[0]["id"]] if steps else []
+    while todo:
+        sid = todo.pop()
+        if sid in seen or sid not in kinds:
+            continue
+        seen.add(sid)
+        if kinds[sid] != "decision":
+            todo += [e["target"] for e in out.get(sid, [])]
+    return seen
+
+
 def path_problems(steps: list[dict], edges: list[dict], has_start: bool, has_end: bool) -> list[str]:
     """Start, ends and branches: every path starts at the trigger and reaches an end."""
     problems = []
@@ -290,6 +309,8 @@ def build_levels(groups: list[dict], steps: list[dict], edges: list[dict]) -> di
 
         level_edges, inbound, outbound = [], [], []
         for e in edges:
+            if e["source"] not in paths or e["target"] not in paths:
+                continue  # a line to a step that doesn't exist (a typo): path_problems reports it, the map still opens
             a, b = child_for(e["source"]), child_for(e["target"])
             if a and b and a != b:
                 item = {"source": a, "target": b}

@@ -462,10 +462,16 @@ class GitHubActionsAutomation(Automation):
 
     def refresh(self) -> None:
         with self._lock:
-            if self._refreshing:
-                return  # a read is already under way
-            self._refreshing = True
-        self._refresh_list()
+            busy = self._refreshing
+            if not busy:
+                self._refreshing = True
+        if not busy:
+            self._refresh_list()
+            return
+        # a read is already under way (a page asked moments ago): wait for its answer instead of the old list
+        deadline = time.time() + 60
+        while self._refreshing and time.time() < deadline:
+            time.sleep(0.1)
 
     def _refresh_list(self) -> list[dict]:
         try:

@@ -1,8 +1,9 @@
 """The bridge Codex uses to reach Flowhaus's tools when it runs the chat.
 
 Codex starts this as a stdio MCP server (see server/codex_engine.py). It only forwards: it asks the running Flowhaus
-which tools exist and passes each call on. Flowhaus checks every call exactly like in the Claude chat: the file guard
-(no secrets, no personal data), builder and change-copy rules, and the Allow / Deny question for your own MCP tools.
+which tools exist and passes each call on. Flowhaus checks every call to its own tools like in the Claude chat: the
+builder rule, and the Allow / Deny question for tools of the MCP servers switched on in Flowhaus. Codex's own tools
+(its shell, file edits, its own MCP servers) follow your Codex setup, not Flowhaus: see docs/codex.md.
 
     FLOWHAUS_URL    where Flowhaus runs (http://127.0.0.1:<port>)
     FLOWHAUS_TOKEN  the per-start token that proves the call comes from the chat Flowhaus started

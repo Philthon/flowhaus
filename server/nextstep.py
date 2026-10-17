@@ -21,6 +21,7 @@ import re
 from server import flows
 
 MAX_PROBLEMS = 5
+MAP_NEXT_STEP = "Fix the map's config so every step, path and end is described; `uv run flowhaus check` lists what's wrong."
 
 # (kind, pattern in the error message, next step); {app}, {step}, {file} and {what} are filled in. First match wins.
 RULES: list[tuple[str, re.Pattern, str]] = [
@@ -34,7 +35,7 @@ RULES: list[tuple[str, re.Pattern, str]] = [
     ("transient", re.compile(r"\b5\d\d\b|timed? ?out|timeout|unavailable|connection (refused|reset|error)|could not connect|"
                 r"network|ECONN|ETIMEDOUT|bad gateway", re.I),
      "{app} didn't answer. Run it again; if it keeps happening, add retries with a pause."),
-    ("connect", re.compile(r"(?:(?P<what>[A-Za-z][\w -]{1,40}?) (?:is |was )?)?(?:not mounted|not connected|unplugged|offline)", re.I),
+    ("connect", re.compile(r"(?:(?P<what>\b[A-Za-z][\w-]*(?: [\w-]+){0,3}?) (?:is |was )?)?(?:not mounted|not connected|unplugged|offline)", re.I),
      "Connect {what}, then run it again."),
     ("gone", re.compile(r"no longer exists|_not_found|unknown (channel|sheet|list|table|board)|archived|has been deleted", re.I),
      "“{step}” points at something that no longer exists in {app}. Point it at one that does (a channel, sheet, list, "
@@ -74,15 +75,25 @@ def next_step(message: str, step: dict | None, kind: str | None = None) -> str:
     error_name = next((m.group(0) for m in [re.search(r"\b[A-Z][A-Za-z]+Error\b", message or "")] if m), "an error")
     fill = {"app": step.get("app") or "The outside app", "step": step.get("label") or step.get("id") or "this step",
             "file": f"`{step['file']}`" if step.get("file") else "its code", "kind": error_name}
-    if kind and kind != "other":
-        text = next((t for k, _, t in RULES if k == kind), None)
-        if text:
-            return text.format(**fill, what="what's missing")
-    for _, pattern, text in RULES:
+    declared = [r for r in RULES if r[0] == kind] if kind and kind != "other" else []
+    # the declared kind's rule that fits the message best (a timeout and a rate limit are both "transient"), or else
+    # its first rule; without a declared kind, the first rule the message fits
+    for _, pattern, text in [*declared, *([] if declared else RULES)]:
         if m := pattern.search(message or ""):
-            what = (m.groupdict().get("what") or "").strip()
-            return text.format(**fill, what=f"the {what[0].lower()}{what[1:]}" if what else "what's missing")
+            what = re.sub(r"^(the|a|an|your) ", "", (m.groupdict().get("what") or "").strip(), flags=re.I)
+            if what[1:2].islower():  # "Backup drive" -> "the backup drive", but "VPN" stays "the VPN"
+                what = what[0].lower() + what[1:]
+            return text.format(**fill, what=f"the {what}" if what else "what's missing")
+    if declared:
+        return declared[0][2].format(**fill, what="what's missing")
     return DEFAULT.format(**fill)
+
+
+def next_step_for(error: dict | None, step: dict | None) -> str:
+    """`next_step` for an error as runs store it ({message, kind?}): every place that shows a failure's next step uses
+    this, so a `fail` rule's declared kind gives the same advice everywhere."""
+    error = error or {}
+    return next_step(error.get("message") or "", step, error.get("kind"))
 
 
 def evidence(node: dict | None, run: dict | None) -> tuple[list[str], str | None]:
@@ -91,7 +102,7 @@ def evidence(node: dict | None, run: dict | None) -> tuple[list[str], str | None
     message = ((node or {}).get("error") or {}).get("message") or ""
     # lines that only repeat the error message add nothing
     lines = [t for ln in log if ln.get("level") in ("error", "warn") and (t := ln.get("text") or "")
-             and message not in t]
+             and not (message and message in t)]
     if lines:
         return [ln[:300] for ln in lines[-2:]], None
     return [], "Based on the error message only: there are no log lines for this step."
@@ -105,7 +116,7 @@ def _first_sentence(text: str, limit: int = 220) -> str:
 
 
 def problems(flow_id: str, run_id: str | None = None, found_insights: list[dict] | None = None,
-             review: dict | None = None) -> list[dict]:
+             review: dict | None = None, limit: int | None = MAX_PROBLEMS) -> list[dict]:
     """What's wrong with this flow now, most urgent first: the run (if it failed), then findings, then the map.
     `found_insights` and `review` save working them out again when the caller already has them (the checkup)."""
     from server import harness, insights
@@ -114,8 +125,8 @@ def problems(flow_id: str, run_id: str | None = None, found_insights: list[dict]
     steps = {s["id"]: s for s in fmap["steps"]}
     out: list[dict] = []
 
-    if run_id is None:
-        latest = next(iter(flows.list_runs(flow_id)), None)
+    if run_id is None:  # the latest real run: test runs (the chat's, the test lab's) never count
+        latest = next(iter(flows.production_runs(flow_id, flows.list_runs(flow_id))), None)
         run_id = latest["run_id"] if latest else None
     run = flows.get_run(flow_id, run_id) if run_id else None
     if run and run.get("status") == "failed":
@@ -151,17 +162,16 @@ def problems(flow_id: str, run_id: str | None = None, found_insights: list[dict]
                 "prompt": f"{item['title']}. {item.get('detail') or ''}\nWhat's the cause, and what should I do first?",
             })
 
-    if flows.kind(flow_id) == "connected":
-        for f in (harness.review(flow_id) if review is None else review).get("findings", []):
-            if f.get("level") == "error":
-                out.append({
-                    "id": f"finding:{f['id']}", "node_id": f.get("node_id"), "title": f["title"], "kind": "other",
-                    "priority": "P0",
-                    "evidence": [], "unseen": None,
-                    "detail": _first_sentence(f.get("detail") or ""),
-                    "next_step": f.get("next_step") or _first_sentence(f.get("detail") or ""),
-                    "prompt": f.get("ask") or f"{f['title']}. {f.get('detail') or ''}\nHow do I fix this?",
-                })
+    for f in (harness.review(flow_id) if review is None else review).get("findings", []):
+        if f.get("level") == "error":
+            out.append({
+                "id": f"finding:{f['id']}", "node_id": f.get("node_id"), "title": f["title"], "kind": "other",
+                "priority": "P0",
+                "evidence": [], "unseen": None,
+                "detail": _first_sentence(f.get("detail") or ""),
+                "next_step": f.get("next_step") or _first_sentence(f.get("detail") or ""),
+                "prompt": f.get("ask") or f"{f['title']}. {f.get('detail') or ''}\nHow do I fix this?",
+            })
 
     if fmap.get("problems"):
         first = fmap["problems"][0]
@@ -169,7 +179,7 @@ def problems(flow_id: str, run_id: str | None = None, found_insights: list[dict]
         out.append({
             "id": "map", "node_id": None, "kind": "other", "priority": "P1", "evidence": fmap["problems"][:3], "unseen": None,
             "title": "The map has a problem" if not more else f"The map has {more + 1} problems",
-            "detail": _first_sentence(first), "next_step": "Fix the map's config so every step, path and end is described.",
+            "detail": _first_sentence(first), "next_step": MAP_NEXT_STEP,
             "prompt": "The map has these problems:\n- " + "\n- ".join(fmap["problems"]) + "\nFix them, or tell me how.",
         })
     order = [s["id"] for s in fmap["steps"]]
@@ -181,14 +191,14 @@ def problems(flow_id: str, run_id: str | None = None, found_insights: list[dict]
         pos = order.index(p["node_id"]) if p.get("node_id") in order else len(order)
         return source[p["id"].split(":")[0]], pos, URGENCY.get(p["kind"], 2)
 
-    return sorted(out, key=urgency)[:MAX_PROBLEMS]
+    return sorted(out, key=urgency)[:limit]
 
 
 def plan(flow_id: str, run_id: str | None = None, found_insights: list[dict] | None = None,
-         review: dict | None = None) -> dict:
+         review: dict | None = None, limit: int | None = MAX_PROBLEMS) -> dict:
     """Which problem to solve first, why, and its next step; the rest as "also". {first, others} (first: None if
-    nothing is wrong)."""
-    found = problems(flow_id, run_id, found_insights, review)
+    nothing is wrong). `limit=None` keeps every problem (the Review lists them all)."""
+    found = problems(flow_id, run_id, found_insights, review, limit)
     if not found:
         return {"first": None, "others": []}
     first, others = found[0], found[1:]

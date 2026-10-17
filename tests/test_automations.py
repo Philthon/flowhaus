@@ -322,3 +322,21 @@ def test_the_refresh_button_reads_the_newest_runs_now(autodir, monkeypatch):
     a.refresh()
     assert [c for c in calls if c[:2] == ("run", "list")]  # asked GitHub, and waited for the answer
     assert not a._refreshing
+
+
+def test_refresh_waits_for_a_read_already_under_way(autodir, monkeypatch):
+    import threading
+    import time as _time
+
+    a = automations.all_automations()["newsletter-digest"]
+    a.list_runs()
+    a._refreshing = True  # a page started a background read
+
+    def finish():
+        _time.sleep(0.3)
+        a._list = (_time.time(), [{"run_id": "new"}])
+        a._refreshing = False
+
+    threading.Thread(target=finish).start()
+    a.refresh()
+    assert a._list[1] == [{"run_id": "new"}]  # answered with the fresh list, not the old one

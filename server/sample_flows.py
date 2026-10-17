@@ -413,7 +413,7 @@ def create_account(item, rng):
 def upsert_contact(item, rng):
     if not item["email"]:  # the upsert matches on email: Salesforce refuses the row, and n8n stops the run there
         raise StepFailure(f"Salesforce: REQUIRED_FIELD_MISSING: Email is empty for {item['first_name']} {item['last_name']} "
-                          f"({item['company_name']}). n8n stopped at this row: the contacts before it were saved, the ones "
+                          f"({item['company_name']}). n8n stopped at this contact: the contacts before it were saved, the ones "
                           "after it weren't.")
     item["contact_id"] = _sf_id("003", item["email"])
     item["contact_action"] = "Updated" if zlib.crc32(item["email"].encode()) % 3 == 0 else "Created"
@@ -428,20 +428,20 @@ SALESFORCE = SampleFlow(
     terms={"item": "contact", "items": "contacts"},
     title_field="email", subtitle_field="company_name",
     groups=[
-        {"id": "sheet", "label": "Read the sheet", "description": "Gives you each contact row: first name, last name, email and company name.", "parent": None},
+        {"id": "sheet", "label": "Read the sheet", "description": "Gives you each contact: first name, last name, email and company name.", "parent": None},
         {"id": "accounts", "label": "Find or create the account", "description": "Adds the Salesforce account ID: the existing account's, or a new one's.", "parent": None},
         {"id": "contacts", "label": "Create or update the contact", "description": "Saves each contact in Salesforce by email, linked to its account.", "parent": None},
     ],
     steps=[
-        SampleStep("read_sheet", "Read contact rows", "Gives you first name, last name, email and company name from each row, with the email cleaned up.",
+        SampleStep("read_sheet", "Read the contacts", "Gives you each contact's first name, last name, email and company name, with the email cleaned up.",
                    "sheet", "Google Sheets", read_sheet, (300, 900),
-                   explain="Reads every row of the sheet you set in the Google Sheets step. The columns are First Name, Last Name, Email and Company Name.",
+                   explain="Reads every contact in the sheet you set in the Google Sheets step. The columns are First Name, Last Name, Email and Company Name.",
                    example="Aiko Tanaka · aiko.tanaka@orbit.com · Orbit Robotics"),
         SampleStep("search_account", "Look up the company in Salesforce", "Adds the account ID when Salesforce has an account with exactly this company name.",
                    "accounts", "Salesforce", search_account, (400, 1200),
                    explain="Searches Salesforce accounts for the company name, letter for letter. “Kite Analytics Inc.” doesn't find “Kite Analytics”.",
                    example="Northwind Logistics → 001Qy00000NwLgAAK"),
-        SampleStep("account_found", "Account already in Salesforce?", "Sends rows with a matching account one way, new companies the other.",
+        SampleStep("account_found", "Account already in Salesforce?", "Sends contacts with a matching account one way, new companies the other.",
                    "accounts", "n8n", None, (5, 20), kind="decision",
                    rule="The lookup found an account with exactly this company name",
                    explain="Only an exact name match counts as the same company.",
@@ -449,10 +449,10 @@ SALESFORCE = SampleFlow(
                              {"label": "No", "to": "create_account", "when": "No account with exactly this name: a new one is created"}]),
         SampleStep("use_account", "Use the existing account", "Keeps the account ID that was found, to link the contact to it.",
                    "accounts", "n8n", use_account, (5, 20), next="upsert_contact", only=lambda r: bool(r.get("found_account_id"))),
-        SampleStep("create_account", "Create the account", "Creates an account for each new company name (once, even if several rows have it) and adds its ID.",
+        SampleStep("create_account", "Create the account", "Creates an account for each new company name (once, even if several contacts have it) and adds its ID.",
                    "accounts", "Salesforce", create_account, (500, 1500), next="upsert_contact",
                    only=lambda r: not r.get("found_account_id"),
-                   explain="Creates the account with just its name, then adds the new account's ID to every row of that company."),
+                   explain="Creates the account with just its name, then adds the new account's ID to every contact of that company."),
         SampleStep("upsert_contact", "Create or update the contact", "Updates the contact with the same email, or creates it, linked to its account. Adds the contact ID.",
                    "contacts", "Salesforce", upsert_contact, (600, 1800),
                    explain="Matches contacts by email: an existing contact is updated (name and account), otherwise a new one is created.",

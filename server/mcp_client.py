@@ -1,7 +1,8 @@
 """Talk to one of your MCP servers directly: see which tools it offers, and call one.
 
-Used by the Apps page ("Show tools") and by the Codex chat engine, which reaches your MCP servers through Flowhaus
-so that every call still gets the same Allow / Deny question as in the Claude chat. Servers start only when asked,
+Used by the Apps page ("Show tools") and by the Codex chat engine, which reaches the servers switched on in Flowhaus
+through Flowhaus, so those calls get the same Allow / Deny question as in the Claude chat. (Servers in Codex's own
+config are Codex's: its approval policy decides.) Servers start only when asked,
 with the settings from your own Claude Code / Claude Desktop / Cursor / Codex setup (see server/mcp.py).
 """
 

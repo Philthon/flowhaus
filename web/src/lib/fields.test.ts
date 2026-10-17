@@ -43,4 +43,22 @@ describe("editing items to test a step", () => {
   it("ignores a new field left completely empty", () => {
     expect(fromDrafts([[f("name", "Ana", "text", true), f("", "")]], "lead")).toEqual({ items: [{ name: "Ana" }] });
   });
+
+  it("sends an untouched item back exactly as it came", () => {
+    const rows = [{ _row_id: 1, email: "", size: null, name: "Ann" }, { _row_id: 2, email: "b@x.io", size: 40, name: "Bo" }];
+    const back = fromDrafts(toDrafts(rows, 5), "lead");
+    expect(back).toEqual({ items: [{ email: "", size: null, name: "Ann" }, { email: "b@x.io", size: 40, name: "Bo" }] });
+  });
+
+  it("reads a number typed into a field that was empty as a number", () => {
+    const drafts = toDrafts([{ size: null }, { size: 40 }], 5);
+    drafts[0][0].value = "50";
+    expect(fromDrafts(drafts, "lead")).toEqual({ items: [{ size: 50 }, { size: 40 }] });
+  });
+
+  it("takes any field name, even ones objects have built in", () => {
+    const drafts = toDrafts([{ constructor: "x" }], 5);
+    const back = fromDrafts(drafts, "lead");
+    expect("items" in back && JSON.parse(JSON.stringify(back.items[0]))).toEqual({ constructor: "x" });
+  });
 });

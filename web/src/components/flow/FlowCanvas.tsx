@@ -146,7 +146,10 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, on
         failedChildLabel,
         errorMessage: !info.isGroup ? run?.nodes[id]?.error?.message : null,
         onOpen: info.isGroup ? () => onOpen(id) : undefined,
-        answers: info.kind === "decision" ? level.edges.filter((e) => e.source === id).length : undefined,
+        // every line leaving the decision gets an exit, including an answer that leads out of this box
+        answers: info.kind === "decision"
+          ? level.edges.filter((e) => e.source === id).length + level.outbound.filter((b) => b.source === id).length
+          : undefined,
       };
       const aria = [info.label, info.status.replace("_", " "), inner.length ? `contains ${inner.length} steps, press Enter twice to open` : ""]
         .filter(Boolean)

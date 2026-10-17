@@ -90,13 +90,19 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
     if (map) document.title = `${map.title} · Flowhaus`;
   }, [map]);
 
+  // the map is polled while the chat works: only a real change counts as a new version (it re-runs the Review)
+  const mapJson = useRef("");
   const refreshMap = useCallback(() => {
     if (!flowId) return;
     api
       .map(flowId)
       .then((m) => {
-        setMap(m);
-        setMapVersion((v) => v + 1);
+        const json = JSON.stringify(m);
+        if (json !== mapJson.current) {
+          mapJson.current = json;
+          setMap(m);
+          setMapVersion((v) => v + 1);
+        }
         setLoadError(null);
       })
       .catch((e) => setLoadError(`Could not load the map: ${e.message}. Is the server running on port 8000?`));

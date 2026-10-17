@@ -301,16 +301,16 @@ def overview() -> list[dict]:
 
 def _attention_next_step(m: dict, last: dict | None) -> str | None:
     """What to do about a flow that needs attention (the card says why; this says what to do)."""
-    from server import nextstep
+    from server import insights, nextstep
 
     if last and last.get("status") == "failed":
         error = last.get("error") or {}
         step = next((s for s in m["steps"] if s["id"] == error.get("node_id")), None)
-        return nextstep.next_step(error.get("message") or "", step)
+        return nextstep.next_step_for(error, step)
     if m["flow"].get("overdue"):
-        return "Check the schedule where it runs (cron, GitHub Actions, launchd) and whether it's switched on."
+        return insights.NEXT["missed_schedule"]
     if m["problems"]:
-        return "Fix the map's config; `uv run flowhaus check` lists what's wrong."
+        return nextstep.MAP_NEXT_STEP
     return None
 
 

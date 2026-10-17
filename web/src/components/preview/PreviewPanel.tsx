@@ -42,8 +42,11 @@ const HIDDEN = new Set(["_row_id", "_rejected_reason"]);
 
 export function PreviewPanel(props: Props) {
   const { flowId, nodeId, runId, refreshKey } = props;
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // keyed by step and run: a preview of the step you just left is never shown (or handed to Test) for this one
+  const key = `${nodeId}|${runId}`;
+  const [loaded, setLoaded] = useState<{ key: string; preview: Preview | null; error: string | null } | null>(null);
+  const preview = loaded?.key === key ? loaded.preview : null;
+  const error = loaded?.key === key ? loaded.error : null;
   // the tab opened from outside: a flagged item to look at, or a tab asked for by name (which wins); adjusted while
   // rendering rather than in an effect, so the panel never paints the old tab first
   const asked = () => props.openTab?.tab ?? (props.focusRowId != null ? "flagged" : null);
@@ -63,12 +66,12 @@ export function PreviewPanel(props: Props) {
     let alive = true;
     api
       .preview(flowId, nodeId, runId)
-      .then((p) => alive && (setPreview(p), setError(null)))
-      .catch((e) => alive && (setPreview(null), setError(String(e.message ?? e))));
+      .then((p) => alive && setLoaded({ key, preview: p, error: null }))
+      .catch((e) => alive && setLoaded({ key, preview: null, error: String(e.message ?? e) }));
     return () => {
       alive = false;
     };
-  }, [flowId, nodeId, runId, refreshKey]);
+  }, [flowId, nodeId, runId, refreshKey, key]);
 
   const status = preview?.status ?? "not_run";
   const flaggedCount = preview?.rows_rejected ?? 0;

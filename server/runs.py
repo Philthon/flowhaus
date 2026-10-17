@@ -444,7 +444,8 @@ def _group_results(frames: dict[str, tuple], steps: list[dict], groups: list[dic
 
 
 def io_items(frames: dict[str, tuple], order: list[str]) -> tuple[list[dict], list[dict] | None]:
-    """(everything that came in, everything that came out) for a run, without the internal columns.
+    """(everything that came in, everything that came out) for a run, without the internal columns, except that an
+    item the first step already skipped keeps its `_rejected_reason` (hidden in the UI; Replay leaves it out).
 
     Output is None when the run didn't finish, so there is no output yet.
     """
@@ -458,7 +459,7 @@ def io_items(frames: dict[str, tuple], order: list[str]) -> tuple[list[dict], li
         if only_active:
             df = df[df["_rejected_reason"].isna()] if "_rejected_reason" in df.columns else df
         recs = _records(df, list(df["_row_id"])[:MAX_IO_ITEMS])
-        return [{k: v for k, v in r.items() if k != "_rejected_reason"} for r in recs]
+        return [{k: v for k, v in r.items() if k != "_rejected_reason" or (not only_active and v)} for r in recs]
 
     return rows(first, only_active=False), (rows(last, only_active=True) if last is not None else None)
 

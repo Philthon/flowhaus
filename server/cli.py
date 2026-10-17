@@ -395,7 +395,10 @@ def check(args) -> int:
             problems.append(f"Reading runs failed: {type(exc).__name__}: {exc}")
             run = None
         if run:
+            from server import maps
+
             steps = []
+            always = maps.always_reached(a.steps, maps.chain_edges(a.steps))
             for s in a.steps:
                 n = run["nodes"].get(s["id"]) or {}
                 kind = a.config.get("type")
@@ -404,7 +407,8 @@ def check(args) -> int:
                 missing = "`produces`" if kind == "folder_runs" else "a counting rule (in/out/skip/rows) or `github_step`"
                 n_in, n_out, n_skip = n.get("rows_in"), n.get("rows_out"), n.get("rows_rejected") or 0
                 warning = (f"no {missing}: always shows 'not run'" if not has_rules else
-                           "rules matched nothing in this run" if n.get("status") == "not_run" and run["status"] == "success" else
+                           "rules matched nothing in this run" if n.get("status") == "not_run" and run["status"] == "success"
+                           and s["id"] in always and maps.kind_of(s) == "action" else
                            f"numbers don't add up: {n_in} in ≠ {n_out} out + {n_skip} skipped (a rule may count twice)"
                            if kind != "python" and None not in (n_in, n_out) and n_skip and n_in != n_out + n_skip else None)
                 steps.append({"id": s["id"], "label": s.get("label"), "status": n.get("status"), "in": n_in,

@@ -152,13 +152,18 @@ def sandboxed(cmd: list[str], writable: list[Path]) -> tuple[list[str], bool]:
         d.mkdir(parents=True, exist_ok=True)
         dirs.append(str(d.resolve()))
     if tool == "sandbox-exec":
-        allowed = " ".join(f'(subpath "{d}")' for d in dirs)
+        # folders go in as parameters, never pasted into the profile: a quote in a path can't change the rules
+        params = [a for i, d in enumerate(dirs) for a in ("-D", f"W{i}={d}")]
+        allowed = " ".join(f'(subpath (param "W{i}"))' for i in range(len(dirs)))
         profile = ("(version 1)(allow default)(deny network*)(deny file-write*)"
                    f'(allow file-write* {allowed} (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr"))')
-        return ["/usr/bin/sandbox-exec", "-p", profile, *cmd], True
+        return ["/usr/bin/sandbox-exec", *params, "-p", profile, *cmd], True
     if tool:
+        # a fresh /tmp hides whatever lived there: bind the code (and Python) back read-only, then the writable folders
+        code = {str(ROOT.resolve()), str(Path(sys.prefix).resolve())}
+        ro = [a for d in sorted(code) for a in ("--ro-bind", d, d)]
         binds = [a for d in dirs for a in ("--bind", d, d)]
-        return [tool, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net",
+        return [tool, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", *ro, "--unshare-net",
                 *binds, "--", *cmd], True
     return cmd, False
 

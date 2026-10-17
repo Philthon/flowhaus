@@ -187,13 +187,11 @@ def set_enabled(name: str, enabled: bool) -> None:
 
 
 def _allow_rules() -> list[str]:
-    """`mcp__…` entries from your Claude Code permission rules: tools you already let run without asking."""
-    files = [Path.home() / ".claude" / "settings.json", runtime.ROOT / ".claude" / "settings.json",
-             *[p / ".claude" / "settings.json" for a in automations.all_automations().values() if (p := a.local_path())]]
-    rules = []
-    for f in files:
-        rules += [r for r in (_read_json(f).get("permissions") or {}).get("allow") or [] if str(r).startswith("mcp__")]
-    return rules
+    """`mcp__…` entries from your own Claude Code permission rules (~/.claude/settings.json): tools you already let
+    run without asking. The same file the Claude chat follows (`setting_sources=["user"]`); never a project's or a
+    connected repo's settings, which someone else could have written."""
+    rules = (_read_json(Path.home() / ".claude" / "settings.json").get("permissions") or {}).get("allow") or []
+    return [r for r in rules if str(r).startswith("mcp__")]
 
 
 def load() -> tuple[dict[str, dict], dict[str, str]]:

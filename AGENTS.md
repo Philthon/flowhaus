@@ -95,4 +95,4 @@ Conventions:
 - **UI text:** plain English, about outcomes: what came in, what came out, what was skipped and why.
 - **Errors are data:** adapters return a failed run with a message; they never raise for a bad run.
 - **Design:** flat, quiet Bauhaus (tokens in `web/src/index.css`): hairline borders, no shadows, zero radius, colour only for status. Light and dark.
-- **Security-sensitive code** has tests in `tests/test_api.py`, `test_automations.py`, `test_flows_and_connectors.py`, `test_whatif.py` and `test_pipeline.py` (host and origin checks, the builder rule for the chat's flow tools, the step environment, the test-mode sandbox). Add a case when you touch it.
+- **Security-sensitive code** has tests in `tests/test_api.py`, `test_automations.py`, `test_flows_and_connectors.py`, `test_whatif.py` and `test_pipeline.py` (host and origin checks, the chat's rules in `check_tool_use`: the builder, private folders and read-only real code, the step environment, the test-mode sandbox). Add a case when you touch it.

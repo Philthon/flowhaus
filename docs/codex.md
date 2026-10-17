@@ -18,7 +18,7 @@ Set `FLOWHAUS_CODEX=/path/to/codex` if the CLI isn't on your PATH, and `CODEX_MO
 
 For each message, Flowhaus runs `codex exec` in the Flowhaus project folder and resumes the same Codex thread, so the conversation continues. "New chat" starts a fresh thread.
 
-**Codex runs with your own Codex setup.** Your `~/.codex/config.toml` (sandbox mode, approval policy, rules, MCP servers) applies exactly as when you use Codex yourself, and so does your sign-in. What Codex may read, run or change is managed there, not by Flowhaus. To make the chat stricter or looser, change your Codex setup.
+**Codex runs with your own Codex setup.** Your `~/.codex/config.toml` (sandbox mode, approval policy, rules, MCP servers) applies exactly as when you use Codex yourself, and so does your sign-in. What Codex may read, run or change is managed there, not by Flowhaus. To make the chat stricter or looser, change your Codex setup. In the Claude chat Flowhaus also keeps the chat out of private folders (`private_paths`, run outputs) and off a connected automation's real code; it can't do that for Codex's own shell and file tools, so keep those folders out of Codex's sandbox.
 
 **Flowhaus adds its own tools** through `server/codex_bridge.py`, a local MCP server. Each run gets a fresh token that only that Codex process receives. Calls to these tools get the same checks as in the Claude chat (`agent.call_codex_tool` → `check_tool_use`):
 - **Flows** (`create_flow`, `run_flow`, …) work only in the builder, as in the Claude chat. Codex reads and edits files with its own tools.

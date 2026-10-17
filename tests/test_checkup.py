@@ -102,3 +102,18 @@ def test_noise_is_not_drift_but_a_noisy_real_slide_is(monkeypatch):
 def test_skip_rates_on_a_handful_of_items_are_too_noisy_to_call(monkeypatch):
     few = [run(i, n_in=6, skip=s) for i, s in enumerate([4, 4, 5, 1, 1, 0, 1, 1])]
     assert "skip_drift" not in drift(few, monkeypatch)
+
+
+def test_a_mistyped_branch_target_is_a_problem_not_a_crash():
+    steps = [{"id": "a", "label": "A", "group": None},
+             {"id": "b", "label": "B", "group": None, "kind": "decision",
+              "branches": [{"label": "Yes", "to": "publsh"}, {"label": "No", "to": "a"}]}]
+    edges = maps.chain_edges(steps)
+    assert maps.build_levels([], steps, edges)["root"]["children"] == ["a", "b"]
+    assert "goes to 'publsh'" in maps.path_problems(steps, edges, True, True)[0]
+
+
+def test_steps_behind_an_answer_may_rightly_not_run():
+    steps = [{"id": "read"}, {"id": "ok", "kind": "decision", "branches": [{"label": "Yes", "to": "send"}, {"label": "No", "to": "hold"}]},
+             {"id": "send"}, {"id": "hold", "kind": "end"}]
+    assert maps.always_reached(steps, maps.chain_edges(steps)) == {"read", "ok"}

@@ -156,3 +156,15 @@ def test_mcp_call_waits_for_the_user():
         assert isinstance(asyncio.run(scenario(False)), agent.PermissionResultDeny)
     finally:
         agent.WORKER.sink = None
+
+
+def test_mcp_approvals_follow_only_your_own_settings(tmp_path, monkeypatch):
+    """A connected repo's (or this project's) .claude/settings.json can't pre-approve MCP calls: someone else could
+    have written it. Only ~/.claude/settings.json counts, as in the Claude chat."""
+    home = Path(os.environ["HOME"])
+    claude_setup(home, {"n8n": {"command": "npx"}}, allow=[])
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text(json.dumps({"permissions": {"allow": ["mcp__*"]}}))
+    monkeypatch.setattr(mcp.runtime, "ROOT", repo)
+    assert mcp.needs_approval("mcp__n8n__activate_workflow")

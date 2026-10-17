@@ -9,19 +9,30 @@ export function fieldLabel(name: string): string {
 export const isInternal = (name: string) => name.startsWith("_");
 
 export type FieldKind = "text" | "number" | "yesno";
-/** One field of an item being edited: its value as typed, and what kind of value it holds. */
-export type DraftField = { name: string; value: string; kind: FieldKind; fromRun: boolean };
+/**
+ * One field of an item being edited: its value as typed, and what kind of value it holds. `blank` is what an empty
+ * field from the run was ("" or nothing), so sending it back unedited sends the same value.
+ */
+export type DraftField = { name: string; value: string; kind: FieldKind; fromRun: boolean; blank?: "" | null };
 
 export function kindOf(v: unknown): FieldKind {
   return typeof v === "number" ? "number" : typeof v === "boolean" ? "yesno" : "text";
 }
 
-/** Items as editable fields (internal fields left out), keeping each field's kind. */
+/** Items as editable fields (internal fields left out), keeping each field's kind. A field that's empty in one item
+ * takes its kind from the same field in another item, so typing a number there sends a number. */
 export function toDrafts(rows: Row[], max: number): DraftField[][] {
-  return rows.slice(0, max).map((r) =>
+  const some = rows.slice(0, max);
+  const kinds = new Map<string, FieldKind>();
+  for (const r of some) for (const [name, v] of Object.entries(r)) if (v != null && v !== "" && !kinds.has(name)) kinds.set(name, kindOf(v));
+  return some.map((r) =>
     Object.entries(r)
       .filter(([k]) => !isInternal(k))
-      .map(([name, v]) => ({ name, value: v == null ? "" : String(v), kind: kindOf(v), fromRun: true })),
+      .map(([name, v]) =>
+        v == null || v === ""
+          ? { name, value: "", kind: kinds.get(name) ?? "text", fromRun: true, blank: v === "" ? "" : null }
+          : { name, value: String(v), kind: kindOf(v), fromRun: true },
+      ),
   );
 }
 
@@ -38,17 +49,17 @@ export function fromDrafts(drafts: DraftField[][], item: string): { items: Item[
   const Item = item[0]?.toUpperCase() + item.slice(1);
   const items: Item[] = [];
   for (const [i, d] of drafts.entries()) {
-    const out: Item = {};
+    const out: Item = Object.create(null); // a field may be called "constructor" or "__proto__"
     for (const f of d) {
       const name = f.name.trim();
       if (!name) {
         if (f.value.trim()) return { error: `${Item} ${i + 1}: give the field with “${f.value.trim()}” a name.` };
         continue;
       }
-      if (name in out) return { error: `${Item} ${i + 1} has two fields called “${name}”.` };
+      if (Object.hasOwn(out, name)) return { error: `${Item} ${i + 1} has two fields called “${name}”.` };
       const kind = f.fromRun ? f.kind : (known.get(name) ?? "text");
       const v = f.value.trim();
-      if (v === "") out[name] = null;
+      if (v === "") out[name] = f.blank ?? null;
       else if (kind === "number") {
         if (Number.isNaN(Number(v))) return { error: `${Item} ${i + 1}: “${fieldLabel(name)}” should be a number.` };
         out[name] = Number(v);

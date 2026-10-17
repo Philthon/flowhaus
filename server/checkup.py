@@ -51,11 +51,12 @@ def _item(x: dict, **extra) -> dict:
 def checkup(flow_id: str, run_id: str | None = None) -> dict:
     found = insights.insights(flow_id)
     h = harness.review(flow_id)
-    plan = nextstep.plan(flow_id, run_id, found, h)  # worked out once, shared with the chat's opener
+    # worked out once: every problem for the Review, the first few for the chat's opener
+    plan = nextstep.plan(flow_id, run_id, found, h, limit=None)
     fix_now = []
     for p in ([plan["first"]] if plan["first"] else []) + plan["others"]:
         if p["id"].startswith("map"):
-            continue  # shown under "map"
+            continue  # under "setup", with each problem on its own
         finding = p["id"].startswith("finding:")
         fix_now.append(_item({**p, "level": "error", "id": p["id"].split(":", 1)[1] if finding else p["id"]},
                              why=p.get("why"), unseen=p.get("unseen"), source="finding" if finding else "run"))
@@ -76,7 +77,7 @@ def checkup(flow_id: str, run_id: str | None = None) -> dict:
         conv = flows.connected()[flow_id].conventions()
     else:
         conv = maps.conventions(fmap["steps"], fmap["groups"])
-    setup += [_item({"id": f"map:{n}", "level": "warn", "priority": "P1", "title": p, "next_step": "Fix it in the map's config.",
+    setup += [_item({"id": f"map:{n}", "level": "warn", "priority": "P1", "title": p, "next_step": nextstep.MAP_NEXT_STEP,
                      "prompt": f"The map has this problem: {p}\nFix it, or tell me how."}, source="map")
               for n, p in enumerate(fmap.get("problems") or [])]
     setup += [_item({"id": c["id"], "level": "info", "priority": "P3", "title": c["message"], "next_step": c["fix"],
@@ -84,7 +85,8 @@ def checkup(flow_id: str, run_id: str | None = None) -> dict:
                      "prompt": f"{c['message']}. {c['fix']} Suggest the new wording."}, source="convention") for c in conv]
     for section in (silent, drift, ideas, setup):
         section.sort(key=lambda x: x["priority"])
-    return {"plan": plan, "fix_now": fix_now, "silent": silent, "drift": drift, "ideas": ideas, "setup": setup,
+    opener = {"first": plan["first"], "others": plan["others"][: nextstep.MAX_PROBLEMS - 1]}
+    return {"plan": opener, "fix_now": fix_now, "silent": silent, "drift": drift, "ideas": ideas, "setup": setup,
             "questions": questions, "coverage": h.get("coverage"), "dismissed": h.get("dismissed", []),
             "answered": h.get("answered", []), "context_file": h.get("context_file"),
             "runs_checked": len(insights.finished_runs(flow_id)),
