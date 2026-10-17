@@ -11,9 +11,10 @@ import { ReplayPanel } from "@/components/preview/Replay";
 import { ReviewPanel } from "@/components/flow/Review";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { downstreamOf } from "@/lib/graph";
 import { laterThan, playOrder } from "@/lib/playback";
 import { api, type Checkup, type ContactMatch, type FlowMap, type Run, type RunSummary } from "@/lib/api";
-import { reviewSignal } from "@/lib/review";
+import { reviewSignal, SIGNAL_COLOR } from "@/lib/review";
 import { StatusStrip } from "@/components/flow/StatusStrip";
 import { TestLab } from "@/components/test/TestLab";
 import { LevelMiniMap } from "@/components/flow/LevelMiniMap";
@@ -276,12 +277,17 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
   // while stepping, the boxes still to come (and the result, until the last step) are dimmed; the map pans to the step
   const dimmed = map && playing != null ? laterThan(map, playList, playing) : null;
   if (dimmed && playing != null && playing < playList.length - 1) dimmed.add(OUTPUT_ID);
+  /** Select a box and open its panel on a tab (the step's panel takes the place of a replay). */
+  const openPanel = (id: string, tab: string) => {
+    setReplaying(null);
+    setSelectedId(id);
+    setFocusRowId(null);
+    setPanelTab((t) => ({ tab, n: (t?.n ?? 0) + 1 }));
+  };
   const playTo = (i: number) => {
     if (!run) return;
     setPlay({ level: levelId, run: run.run_id, i });
-    setSelectedId(playList[i]);
-    setFocusRowId(null);
-    setPanelTab((t) => ({ tab: "preview", n: (t?.n ?? 0) + 1 }));
+    openPanel(playList[i], "preview");
   };
   /** The Review: errors and improvements, each with its next step. */
   const openReview = () => {
@@ -294,11 +300,7 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
     const level = map.levels[levelId];
     const ids = [...(selectedId ? [selectedId] : []), ...(playList.length ? playList : (level?.children ?? []))];
     const id = ids.find((x) => tryMode(map, x));
-    if (!id) return;
-    setReplaying(null);
-    setSelectedId(id);
-    setFocusRowId(null);
-    setPanelTab((t) => ({ tab: "try", n: (t?.n ?? 0) + 1 }));
+    if (id) openPanel(id, "try");
   };
 
   const onChatRun = useCallback(
@@ -480,11 +482,7 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
               }}
               onOpen={open}
               onGoTo={goToBoundary}
-              onTry={(id) => {
-                setSelectedId(id);
-                setFocusRowId(null);
-                setPanelTab((t) => ({ tab: "try", n: (t?.n ?? 0) + 1 }));
-              }}
+              onTry={(id) => openPanel(id, "try")}
               topInset={levelPath.length > 0 ? miniMapHeight + 12 : 0}
             />
             </ErrorBoundary>
@@ -527,19 +525,10 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
                   const step = map.steps.find((x) => x.id === selectedId);
                   const group = map.groups.find((g) => g.id === selectedId);
                   if (!step && !group) return null;
-                  // everything after this step (or this group's steps), in map order: what a change here can reach
+                  // everything after this step (or this group's steps): what a change here can reach
                   const start = step ? [step.id] : map.steps.filter((x) => x.group === selectedId).map((x) => x.id);
-                  const seen = new Set(start);
-                  const queue = [...start];
-                  while (queue.length) {
-                    const id = queue.shift()!;
-                    for (const e of map.edges)
-                      if (e.source === id && !seen.has(e.target)) {
-                        seen.add(e.target);
-                        queue.push(e.target);
-                      }
-                  }
-                  const after = map.steps.filter((x) => seen.has(x.id) && !start.includes(x.id)).map((x) => x.label ?? x.id);
+                  const label = new Map(map.steps.map((x) => [x.id, x.label ?? x.id]));
+                  const after = downstreamOf([...label.keys()], map.edges, start).map((id) => label.get(id)!);
                   return { explain: step?.explain, example: step?.example, file: step?.file, app: step?.app, after };
                 })()}
                 decision={(() => {
@@ -741,7 +730,7 @@ function TopBar(p: TopBarProps) {
           title={`Review: ${REVIEW_SAYS[signal.tone]}`}
         >
           <ReviewIcon
-            className={cn(signal.tone === "error" ? "text-red-600" : signal.tone === "warn" || signal.tone === "idea" ? "text-amber-500" : undefined)}
+            className={SIGNAL_COLOR[signal.tone]}
           />
           <span className="hidden @md:inline">Review</span>
           {signal.count > 0 && <span className="text-xs tabular-nums text-muted-foreground">{signal.count}</span>}

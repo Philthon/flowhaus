@@ -8,6 +8,9 @@ export function fieldLabel(name: string): string {
 
 export const isInternal = (name: string) => name.startsWith("_");
 
+/** A field's value as shown: empty shows as a dash. */
+export const showValue = (v: unknown) => (v == null || v === "" ? "–" : String(v));
+
 export type FieldKind = "text" | "number" | "yesno";
 /**
  * One field of an item being edited: its value as typed, and what kind of value it holds. `blank` is what an empty

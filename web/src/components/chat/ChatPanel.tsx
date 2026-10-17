@@ -465,7 +465,7 @@ function EnginePicker({ disabled }: { disabled: boolean }) {
   const codexReady = settings.codex.available && settings.codex.signed_in;
   const pick = async (engine: "claude" | "codex") => {
     try {
-      setSettings(await api.setChatEngine(engine));
+      setSettings(await api.updateSettings({ chat_engine: engine }));
       setError(null);
     } catch (e) {
       setError((e as Error).message);

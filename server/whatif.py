@@ -27,7 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from server import flows, runtime
+from server import flows, review, runtime
 
 MAX_ITEMS = 50
 MAX_REPLAY = 500
@@ -97,20 +97,6 @@ def _numbered(items: list[dict], limit: int = MAX_ITEMS) -> list[dict]:
              "_rejected_reason": None} for n, it in enumerate(items, 1)]
 
 
-def _after(fmap: dict, step_id: str) -> list[str]:
-    """Step ids after step_id, in map order."""
-    nxt: dict[str, list[str]] = {}
-    for e in fmap.get("edges") or []:
-        nxt.setdefault(e["source"], []).append(e["target"])
-    seen, queue = {step_id}, [step_id]
-    while queue:
-        for t in nxt.get(queue.pop(0), []):
-            if t not in seen:
-                seen.add(t)
-                queue.append(t)
-    return [s["id"] for s in fmap["steps"] if s["id"] in seen and s["id"] != step_id]
-
-
 def _resolve(fmap: dict, step_id: str) -> str:
     if any(s["id"] == step_id for s in fmap["steps"]):
         return step_id
@@ -123,7 +109,7 @@ def _resolve(fmap: dict, step_id: str) -> str:
 def _execute(flow_id: str, fmap: dict, step_id: str, rows: list[dict], downstream: bool) -> tuple[list[dict], list[dict]]:
     """(what happened at each step, every item after the last step that ran, skipped ones with their reason)."""
     labels = {s["id"]: s.get("label") or s["id"] for s in fmap["steps"]}
-    order = [step_id, *(_after(fmap, step_id) if downstream else [])]
+    order = [step_id, *(review.downstream(fmap, [step_id]) if downstream else [])]
     steps = _sample(flow_id, order, rows, labels) if flows.kind(flow_id) == "sample" else _run_built(flow_id, order, rows, labels)
     last_ok = next((s for s in reversed(steps) if s.get("after") is not None), None)
     after = last_ok["after"] if last_ok else []
@@ -152,11 +138,6 @@ def try_step(flow_id: str, step_id: str, items: list[dict], downstream: bool = T
 # --------------------------------------------------------------------------- replaying a past run
 
 
-def _same(v) -> str:
-    v = _plain(v)
-    return "" if v is None else str(v)
-
-
 def _name(row: dict) -> str:
     """What to call an item in a sentence: its first text field."""
     return next((str(v) for k, v in row.items() if not k.startswith("_") and isinstance(v, str) and v.strip()), f"#{row.get('_row_id')}")
@@ -164,6 +145,8 @@ def _name(row: dict) -> str:
 
 def _compare(before: list[dict], after: list[dict]) -> dict:
     """What came out of the run then, against what comes out now, item by item."""
+    from server import runs
+
     then = {r.get("_row_id"): r for r in before}
     now = {r.get("_row_id"): r for r in after if not _plain(r.get("_rejected_reason"))}
     skipped_now = {r.get("_row_id"): str(_plain(r["_rejected_reason"])) for r in after if _plain(r.get("_rejected_reason"))}
@@ -174,7 +157,7 @@ def _compare(before: list[dict], after: list[dict]) -> dict:
                 examples.append({"item": _name(r), "now": "comes out (it didn't before)"})
             continue
         diff = {k: [_plain(then[rid].get(k)), _plain(r.get(k))] for k in sorted(set(r) | set(then[rid]))
-                if not k.startswith("_") and _same(r.get(k)) != _same(then[rid].get(k))}
+                if not k.startswith("_") and not runs.same_value(r.get(k), then[rid].get(k))}
         if diff:
             changed += 1
             if len(examples) < 5:
@@ -206,7 +189,7 @@ def replay(flow_id: str, run_id: str) -> dict:
     steps_in_order = [s["id"] for s in fmap["steps"]]
     first = steps_in_order[0]
     # the run recorded what its first step gave (the items it read), so the replay starts at the step after it
-    start = next(iter(_after(fmap, first)), None)
+    start = next(iter(review.downstream(fmap, [first])), None)
     if start is None:
         raise ValueError("This flow has only one step, so there's nothing to replay after it.")
     sent = _numbered(items, MAX_REPLAY)

@@ -286,16 +286,8 @@ def _ideas(flow_id: str, runs: list[dict], labels: dict, items: str) -> list[dic
         kinds[key] = kinds.get(key, 0) + 1
     for (kind, sid), n in kinds.items():
         if n >= 2 and kind != "other":
-            what = {"transient": "an app not answering or rate limits", "auth": "an expired key or login",
-                    "credits": "running out of credits", "data": "missing fields", "file": "missing files",
-                    "connect": "something not connected", "gone": "something that no longer exists",
-                    "code": "errors in the code", "duplicate": "duplicates"}.get(kind, kind)
-            fix = {"transient": "Add retries with a growing pause to “{step}”, so a busy app doesn't fail the run.",
-                   "auth": "Move the key to a place that renews (a token that doesn't expire, or a reminder before it does).",
-                   "credits": "Raise the plan limit, or add a check that stops early with a clear message when credits run low.",
-                   "data": "Skip items without the field earlier, with a reason, so one item can't fail the run.",
-                   "connect": "Make the run check for it first and stop with a clear message, or wait and retry.",
-                   }.get(kind, "Fix the cause once, so it stops coming back.")
+            what = nextstep.KIND_LABEL.get(kind, kind)
+            fix = nextstep.LASTING_FIX.get(kind, "Fix the cause once, so it stops coming back.")
             out.append({"id": f"failure_pattern:{kind}:{sid or ''}", "level": "warn", "kind": "failure_pattern", "node_id": sid,
                         "title": f"{n} of the last {len(runs[:10])} runs failed on {what}" + (f" at “{labels.get(sid, sid)}”" if sid else ""),
                         "detail": "The same kind of failure keeps coming back: worth a lasting fix rather than another re-run.",

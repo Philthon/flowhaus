@@ -72,7 +72,7 @@ export function FlowsPage() {
   const showDemo = settings ? settings.show_demo : null;
   const toggleDemo = async () => {
     setFlows(null); // show "Loading…" instead of the old list while the other set loads
-    setSettings(await api.setShowDemo(!showDemo));
+    setSettings(await api.updateSettings({ show_demo: !showDemo }));
     load();
   };
 

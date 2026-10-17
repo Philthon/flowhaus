@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { loopEdges } from "./graph";
+import { downstreamOf, loopEdges } from "./graph";
 
 describe("lines that loop back", () => {
   it("finds the line back to an earlier step, and only that one", () => {
@@ -31,3 +31,17 @@ describe("lines that loop back", () => {
     expect(loopEdges(["a", "b"], edges).size).toBe(1);
   });
 });
+
+describe("what comes after a step", () => {
+  it("follows every line onwards, in the steps' order, without the step itself or looping forever", () => {
+    const edges = [
+      { source: "a", target: "b" },
+      { source: "b", target: "c" },
+      { source: "b", target: "d" },
+      { source: "d", target: "b" },
+    ];
+    expect(downstreamOf(["a", "b", "c", "d", "e"], edges, ["b"])).toEqual(["c", "d"]);
+    expect(downstreamOf(["a", "b", "c", "d", "e"], edges, ["e"])).toEqual([]);
+  });
+});
+

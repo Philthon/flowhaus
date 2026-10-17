@@ -90,5 +90,4 @@ def checkup(flow_id: str, run_id: str | None = None) -> dict:
             "questions": questions, "coverage": h.get("coverage"), "dismissed": h.get("dismissed", []),
             "answered": h.get("answered", []), "context_file": h.get("context_file"),
             "runs_checked": len(insights.finished_runs(flow_id)),
-            "errors": len(fix_now) + len(silent) + len(drift), "improvements": len(ideas) + len(setup) + len(questions),
-            "total": len(fix_now) + len(silent) + len(drift) + len(ideas) + len(setup) + len(questions)}
+            "errors": len(fix_now) + len(silent) + len(drift), "improvements": len(ideas) + len(setup) + len(questions)}

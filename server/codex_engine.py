@@ -44,7 +44,7 @@ def status() -> dict:
     return {"available": bool(path), "signed_in": signed_in, "path": path, "why": why}
 
 
-def command(prompt: str, thread_id: str | None, url: str, model: str | None = None) -> list[str]:
+def command(prompt: str, thread_id: str | None, model: str | None = None) -> list[str]:
     """The `codex exec` call for one message."""
     exe = codex_path() or "codex"
     bridge = {
@@ -108,7 +108,7 @@ async def run(prompt: str, thread_id: str | None, url: str, token: str, on_text:
               on_start: Callable[[asyncio.subprocess.Process], None] | None = None) -> tuple[str | None, str | None]:
     """Run one message. Streams the answer through on_text. Returns (thread_id, error or None)."""
     env = {**os.environ, "FLOWHAUS_URL": url, "FLOWHAUS_TOKEN": token}
-    proc = await asyncio.create_subprocess_exec(*command(prompt, thread_id, url, model), cwd=str(WORKDIR), env=env,
+    proc = await asyncio.create_subprocess_exec(*command(prompt, thread_id, model), cwd=str(WORKDIR), env=env,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                                                 stdin=asyncio.subprocess.DEVNULL, limit=16 * 1024 * 1024)
     if on_start:

@@ -114,14 +114,14 @@ def test_tools_of_a_connected_server_can_be_listed_and_called(tmp_path):
 
 
 def test_codex_runs_with_your_own_codex_setup_plus_flowhaus_tools():
-    cmd = codex_engine.command("hello", None, "http://127.0.0.1:8000")
+    cmd = codex_engine.command("hello", None)
     joined = " ".join(cmd)
     # your Codex config, sandbox and approvals decide what Codex may do: Flowhaus doesn't override them
     assert not any(flag in cmd for flag in ("--ignore-user-config", "--ignore-rules", "--sandbox"))
     assert "features.shell_tool" not in joined
     # Flowhaus only adds its own tools, with the token passed through the environment, never on the command line
     assert "server.codex_bridge" in joined and "FLOWHAUS_TOKEN" in joined and agent.CODEX_TOKEN not in joined
-    again = codex_engine.command("again", "thread-1", "http://x")
+    again = codex_engine.command("again", "thread-1")
     assert again[2:4] == ["resume", "thread-1"] and "-C" not in again  # `codex exec resume` has no -C
 
 

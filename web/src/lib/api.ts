@@ -279,7 +279,6 @@ export type Checkup = {
   errors: number;
   /** ideas + setup + questions */
   improvements: number;
-  total: number;
   runs_checked: number;
 };
 
@@ -362,7 +361,7 @@ export const api = {
     postJson<WhatIf>("/api/whatif", { flow_id: flowId, step_id: stepId, items, downstream }),
   replay: (flowId: string, runId: string) => postJson<WhatIf>("/api/whatif/replay", { flow_id: flowId, run_id: runId }),
   checkup: (flowId: string, runId?: string | null) =>
-    fetch(`/api/checkup?flow_id=${encodeURIComponent(flowId)}${runId ? `&run_id=${encodeURIComponent(runId)}` : ""}`).then((r) =>
+    fetch(`/api/checkup?${q(flowId)}${runId ? `&run_id=${encodeURIComponent(runId)}` : ""}`).then((r) =>
       json<Checkup>(r),
     ),
   answerQuestion: (flowId: string, question_id: string, answer: string) =>
@@ -381,13 +380,10 @@ export const api = {
     }).then((r) => json<{ servers: McpServer[] }>(r)),
   flows: () => fetch("/api/flows").then((r) => json<{ flows: FlowCard[] }>(r)),
   settings: () => fetch("/api/settings").then((r) => json<Settings>(r)),
-  setShowDemo: (show_demo: boolean) =>
-    fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ show_demo }) }).then((r) =>
+  /** Change one or more settings; the rest stay as they are. */
+  updateSettings: (patch: { show_demo?: boolean; chat_engine?: "claude" | "codex" }) =>
+    fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }).then((r) =>
       json<Settings>(r),
-    ),
-  setChatEngine: (chat_engine: "claude" | "codex") =>
-    fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_engine }) }).then(
-      (r) => json<Settings>(r),
     ),
   setEnabled: (flowId: string, enabled: boolean) =>
     fetch(`/api/flows/${flowId}`, {
