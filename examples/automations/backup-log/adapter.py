@@ -27,8 +27,8 @@ class BackupLog(Automation):
         return {"run_id": rec["run"].replace(":", "-"), "flow_id": self.id, "status": "failed" if failed else "success",
                 "started_at": rec["run"], "finished_at": rec.get("finished"), "trigger": "schedule",
                 "input_file": "photos",
-                "error": {"node_id": "copy" if rec.get("error") else "verify",
-                          "message": rec.get("error") or f"{rec['copied'] - rec['verified']} copies did not match."}
+                "error": {"node_id": "drive_ok" if rec.get("error") else "all_match",
+                          "message": rec.get("error") or (lambda n: f"{n} {'copy' if n == 1 else 'copies'} didn't match the original.")(rec["copied"] - rec["verified"])}
                 if failed else None,
                 "summary": {"rows_read": rec["found"], "rows_written": rec["verified"],
                             "rows_rejected": rec["found"] - rec["verified"]}}
@@ -41,23 +41,30 @@ class BackupLog(Automation):
         if rec is None:
             return None
         summary = self._summary(rec)
-        counts = {"find_new": (rec["found"], rec["found"], {}),
-                  "copy": (rec["found"], rec["copied"], {"Can't be read": rec["unreadable"]} if rec["unreadable"] else {}),
-                  "verify": (rec["copied"], rec["verified"],
-                             {"Checksum differs": rec["copied"] - rec["verified"]} if rec["verified"] < rec["copied"] else {})}
+        mounted = not rec.get("error")
+        differ = rec["copied"] - rec["verified"]
+        # (status, in, out, skip reasons) per step; steps on the path this run didn't take stay "not run"
+        took = {"find_new": ("success", rec["found"], rec["found"], {}), "drive_ok": ("success", None, None, {})}
+        if not mounted:
+            took.update(retry=("success", rec["found"], rec["found"], {}), stopped=("success", None, None, {}))
+        else:
+            took["copy"] = ("success", rec["found"], rec["copied"], {"Can't be read": rec["unreadable"]} if rec["unreadable"] else {})
+            took["verify"] = ("success", rec["copied"], rec["copied"], {})
+            took["all_match"] = ("success", None, None, {})
+            took.update({"done": ("success", None, None, {})} if differ == 0 else
+                        {"review": ("success", differ, differ, {}), "flagged": ("success", None, None, {})})
         nodes = {}
         for step in self.steps:
             n = empty_node(step)
-            n_in, n_out, reasons = counts[step["id"]]
-            failed_here = summary["error"] and summary["error"]["node_id"] == step["id"]
-            n.update(status="failed" if failed_here else "success", rows_in=n_in, rows_out=n_out,
-                     rows_rejected=sum(reasons.values()), reject_reasons=reasons,
-                     error={"message": summary["error"]["message"], "type": "RunError", "traceback": ""} if failed_here else None)
+            if step["id"] in took:
+                status, n_in, n_out, reasons = took[step["id"]]
+                n.update(status=status, rows_in=n_in, rows_out=n_out, rows_rejected=sum(reasons.values()), reject_reasons=reasons)
             nodes[step["id"]] = n
-            if failed_here:
-                break
-        for step in self.steps:
-            nodes.setdefault(step["id"], empty_node(step))
+        # the step the run's error names is where it failed: show it as failed, with the reason (the path after it,
+        # e.g. waiting and stopping, still shows what happened next)
+        if (error := summary.get("error")) and error.get("node_id") in nodes:
+            nodes[error["node_id"]].update(status="failed", error={"message": error["message"], "type": "RunError",
+                                                                    "traceback": ""})
         return {**summary, "nodes": nodes, "groups": group_results(self.groups, self.steps, nodes), "contacts": [],
                 "input_items": [], "output_items": None}
 

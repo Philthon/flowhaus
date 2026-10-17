@@ -5,11 +5,10 @@ import json
 import os
 import sys
 import threading
-from pathlib import Path
 
 import pytest
 
-from server import automations, flows, runs, testlab
+from server import flows, runs, testlab
 
 os.environ["STEP_DELAY_S"] = "0"
 

@@ -1,11 +1,15 @@
 import { MarkerType, ReactFlowProvider, useReactFlow, type Edge, type Node } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Canvas } from "@/components/ai-elements/canvas";
-import type { Counts, FlowMap, PrevCounts, Run, Status } from "@/lib/api";
-import { layout, sizeOf } from "@/lib/layout";
+import type { FlowMap, MapEdge, Run } from "@/lib/api";
+import { loopEdges } from "@/lib/graph";
+import { layout, sizeOf, type RoutedEdgeData } from "@/lib/layout";
 import { cn } from "@/lib/utils";
-import { nodeTypes, type FlowNodeData } from "./nodes";
+import { Glance } from "./Glance";
+import { INPUT_ID, nodeInfo, OUTPUT_ID } from "@/lib/mapinfo";
+import type { FlowNodeData } from "./nodes";
+import { edgeTypes, nodeTypes } from "./registry";
 
 type Props = {
   map: FlowMap;
@@ -16,42 +20,15 @@ type Props = {
   onSelect: (id: string | null) => void;
   onOpen: (groupId: string) => void;
   onGoTo: (nodeId: string) => void;
+  /** While stepping through a run: boxes still to come (drawn faded), and the box to pan to. */
+  dimmed?: Set<string> | null;
+  focusId?: string | null;
+  /** Open the "Test" tab for a box (from the quick view). */
+  onTry?: (nodeId: string) => void;
   /** Pixels at the top covered by overlays (mini map); boxes are fitted below them. */
   topInset?: number;
 };
 
-export const INPUT_ID = "__input__";
-export const OUTPUT_ID = "__output__";
-
-export function nodeInfo(map: FlowMap, run: Run | null, id: string) {
-  if (id === INPUT_ID || id === OUTPUT_ID) {
-    const output = id === OUTPUT_ID;
-    // In: fine as soon as items were read. Out: follows the run (failed run = nothing came out).
-    const status: Status = !run ? "not_run" : output ? run.status : run.input_count ? "success" : run.status;
-    return {
-      previous: null,
-      isGroup: false,
-      label: output ? "What came out" : "What came in",
-      description: output ? (map.flow.output?.label ?? "The items that made it through") : map.flow.trigger.label,
-      status,
-      counts: null,
-    };
-  }
-  const group = map.groups.find((g) => g.id === id);
-  const step = map.steps.find((s) => s.id === id);
-  const counts: (Counts & { failed_step?: string | null }) | null = group
-    ? (run?.groups[id] ?? null)
-    : (run?.nodes[id] ?? null);
-  const previous: PrevCounts | null = (group ? run?.previous?.groups[id] : run?.previous?.nodes[id]) ?? null;
-  return {
-    previous,
-    isGroup: !!group,
-    label: group?.label ?? step?.label ?? id,
-    description: group?.description ?? step?.description ?? "",
-    status: (counts?.status ?? "not_run") as Status,
-    counts,
-  };
-}
 
 export function FlowCanvas(props: Props) {
   return (
@@ -71,26 +48,32 @@ export function FlowCanvas(props: Props) {
 }
 
 /** Below this zoom the text gets too small to read; the map then scrolls sideways instead of shrinking. */
-const MIN_READABLE_ZOOM = 0.6;
+const MIN_READABLE_ZOOM = 0.85; // smaller than this and the step text gets too small to read: pan instead
 
-function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, topInset = 0 }: Props) {
+function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, onTry, dimmed, focusId, topInset = 0 }: Props) {
   const level = map.levels[levelId];
   const wrapper = useRef<HTMLDivElement>(null);
   const { fitView, setViewport } = useReactFlow();
-  const paddingRef = useRef(fitPadding(topInset));
-  paddingRef.current = fitPadding(topInset);
   const nodesRef = useRef<Node[]>([]);
   const fitRef = useRef<() => void>(() => {});
+  const selectedRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    selectedRef.current = selectedId ?? null;
+  }, [selectedId]);
+  const [cropped, setCropped] = useState(false); // the map is bigger than the screen at a readable size
 
-  /** Fit the whole flow; if that would make the text too small, keep a readable zoom, start at the left and scroll sideways. */
+  /**
+   * Fit the whole flow; if that would make the text too small, keep a readable zoom and scroll sideways: centred on
+   * the selected box when there is one (coming back out of a box selects it), otherwise from the start.
+   */
   const fit = useCallback(
     (duration = 200) => {
+      if (document.hidden) duration = 0; // a hidden tab doesn't animate: jump straight there
       const el = wrapper.current;
       const placed = nodesRef.current;
-      if (!el || !placed.length) {
-        fitView({ padding: paddingRef.current, maxZoom: 1.15, duration });
-        return;
-      }
+      // nothing laid out yet: wait (the layout fits the map when it's done). Calling React Flow's fitView now would
+      // run later, once the shapes appear, and override the readable zoom chosen below.
+      if (!el || !placed.length) return;
       const box = placed.map((n) => ({ ...n.position, ...sizeOf(n) }));
       const left = Math.min(...box.map((b) => b.x));
       const top = Math.min(...box.map((b) => b.y));
@@ -99,19 +82,26 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, to
       const usableH = el.clientHeight - topInset - 32;
       const readable = el.clientWidth < 600 ? 0.85 : MIN_READABLE_ZOOM; // phones: bigger text, scroll sideways
       const fitsAll = Math.min((el.clientWidth * 0.92) / width, (usableH * 0.9) / height, 1.15);
+      setCropped(fitsAll < readable);
       if (fitsAll >= readable) {
-        fitView({ padding: paddingRef.current, maxZoom: 1.15, duration });
+        fitView({ padding: fitPadding(topInset), maxZoom: 1.15, duration });
         return;
       }
       const zoom = Math.min(readable, (usableH * 0.9) / height);
-      setViewport(
-        { x: 16 - left * zoom, y: topInset + 16 + Math.max(0, (usableH - height * zoom) / 2) - top * zoom, zoom },
-        { duration },
-      );
+      let x = 16 - left * zoom; // the start of the flow at the left edge
+      const keep = placed.find((n) => n.id === selectedRef.current);
+      if (keep) {
+        const centred = el.clientWidth / 2 - (keep.position.x + sizeOf(keep).width / 2) * zoom;
+        const end = el.clientWidth - 16 - (left + width) * zoom; // not past the end of the flow
+        x = Math.min(x, Math.max(end, centred));
+      }
+      setViewport({ x, y: topInset + 16 + Math.max(0, (usableH - height * zoom) / 2) - top * zoom, zoom }, { duration });
     },
     [fitView, setViewport, topInset],
   );
-  fitRef.current = () => fit();
+  useLayoutEffect(() => {
+    fitRef.current = () => fit();
+  }, [fit]);
 
   // Re-fit when the overlay at the top grows or shrinks, or the layout turns.
   useEffect(() => {
@@ -135,7 +125,7 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, to
     };
   }, []);
 
-  const { nodes, edges } = useMemo(() => {
+  const structure = useMemo(() => {
     if (!level) return { nodes: [] as Node[], edges: [] as Edge[] };
     const nodes: Node[] = level.children.map((id) => {
       const info = nodeInfo(map, run, id);
@@ -156,13 +146,33 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, to
         failedChildLabel,
         errorMessage: !info.isGroup ? run?.nodes[id]?.error?.message : null,
         onOpen: info.isGroup ? () => onOpen(id) : undefined,
+        // every line leaving the decision gets an exit, including an answer that leads out of this box
+        answers: info.kind === "decision"
+          ? level.edges.filter((e) => e.source === id).length + level.outbound.filter((b) => b.source === id).length
+          : undefined,
       };
       const aria = [info.label, info.status.replace("_", " "), inner.length ? `contains ${inner.length} steps, press Enter twice to open` : ""]
         .filter(Boolean)
         .join(", ");
-      return { id, type: "flow", data, position: { x: 0, y: 0 }, selected: id === selectedId, ariaLabel: aria };
+      const type = info.kind === "action" ? "flow" : info.kind;
+      return { id, type, data, position: { x: 0, y: 0 }, ariaLabel: `${info.kind === "action" ? "" : info.kind + ": "}${aria}` };
     });
-    const edges: Edge[] = level.edges.map((e) => edgeFor(e.source, e.target, map, run));
+    // A line back to an earlier box (a loop: "try again") becomes a "Go to" marker next to where it leaves, so lines
+    // never run backwards across the map. Clicking the marker selects the box it goes to.
+    const loops = loopEdges(level.children, level.edges);
+    const edges: Edge[] = level.edges.map((e) => {
+      const edge = edgeFor(e.source, e.target, map, run, e);
+      if (!loops.has(`${e.source}->${e.target}`)) return edge;
+      const id = `goto:${e.source}:${e.target}`;
+      nodes.push({
+        id,
+        type: "goto",
+        position: { x: 0, y: 0 },
+        ariaLabel: `Goes back to ${nodeInfo(map, run, e.target).label}. Click to show it`,
+        data: { label: nodeInfo(map, run, e.target).label, target: e.target, status: nodeInfo(map, run, e.source).status === "success" ? "success" : "not_run" },
+      });
+      return { ...edge, id: `${edge.id}:goto`, target: id };
+    });
 
     if (levelId === "root" && map.flow) {
       const terms = map.flow.terms;
@@ -170,26 +180,28 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, to
         id: INPUT_ID,
         type: "trigger",
         position: { x: 0, y: 0 },
-        selected: selectedId === INPUT_ID,
         ariaLabel: `Starts when: ${map.flow.trigger.label}. Click to see what came in`,
         data: { trigger: map.flow.trigger, nextRun: map.flow.next_run, enabled: map.flow.enabled,
                 count: run?.input_count ?? null, items: (map.flow.input_terms ?? terms).items, item: (map.flow.input_terms ?? terms).item },
       });
-      nodes.push({
-        id: OUTPUT_ID,
-        type: "result",
-        position: { x: 0, y: 0 },
-        selected: selectedId === OUTPUT_ID,
-        ariaLabel: `Result: ${map.flow.output?.label ?? ""}. Click to see what came out`,
-        data: { label: map.flow.output?.label ?? `The ${terms.items} that made it through`, status: nodeInfo(map, run, OUTPUT_ID).status,
-                count: run?.output_count ?? null, items: terms.items, item: terms.item },
-      });
       const targets = new Set(level.edges.map((e) => e.target));
       const sources = new Set(level.edges.map((e) => e.source));
-      for (const c of level.children.filter((c) => !targets.has(c)))
+      const isEnd = (c: string) => nodeInfo(map, run, c).kind === "end";
+      for (const c of level.children.filter((c) => !targets.has(c) && !isEnd(c)))
         edges.unshift({ ...edgeFor(INPUT_ID, c, map, run), style: { stroke: "var(--input)", strokeWidth: 1.25, strokeDasharray: "4 4" } });
-      const ends = level.edges.length ? level.children.filter((c) => !sources.has(c)) : level.children.slice(-1);
-      for (const c of ends) edges.push(edgeFor(c, OUTPUT_ID, map, run));
+      // paths that don't finish in an end of their own finish at the flow's result
+      const open = level.edges.length ? level.children.filter((c) => !sources.has(c) && !isEnd(c)) : level.children.slice(-1);
+      if (open.length || !level.children.some(isEnd)) {
+        nodes.push({
+          id: OUTPUT_ID,
+          type: "result",
+          position: { x: 0, y: 0 },
+          ariaLabel: `End, result: ${map.flow.output?.label ?? ""}. Click to see what came out`,
+          data: { label: map.flow.output?.label ?? `The ${terms.items} that made it through`, status: nodeInfo(map, run, OUTPUT_ID).status,
+                  count: run?.output_count ?? null, items: terms.items, item: terms.item },
+        });
+        for (const c of open) edges.push(edgeFor(c, OUTPUT_ID, map, run));
+      }
     }
 
     for (const b of level.inbound) {
@@ -217,13 +229,116 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, to
       edges.push(dashed(edgeFor(b.source, id, map, run)));
     }
     // Nothing connected yet (e.g. a flow still being built): lay the boxes out in order, left to right.
-    const layoutEdges = level.edges.length
-      ? edges
-      : [...edges, ...level.children.slice(1).map((c, i) => ({ id: `order:${i}`, source: level.children[i], target: c }))];
-    const laidOut = layout(nodes, layoutEdges);
-    nodesRef.current = laidOut;
-    return { nodes: laidOut, edges };
-  }, [level, map, run, selectedId, onOpen, onGoTo]);
+    if (!level.edges.length)
+      for (let i = 1; i < level.children.length; i++)
+        edges.push({ id: `order:${i}`, source: level.children[i - 1], target: level.children[i], hidden: true });
+    return { nodes, edges };
+  }, [level, levelId, map, run, onOpen, onGoTo]);
+
+  // Layout runs in the background (ELK), and only when the shapes, their sizes or the lines change: a new run status
+  // or count just updates the shapes where they are. Until a new layout is back, the previous one stays on screen.
+  const layoutKey = useMemo(
+    () =>
+      JSON.stringify([
+        structure.nodes.map((n) => [n.id, n.type, sizeOf(n)]),
+        structure.edges.map((e) => [e.id, e.source, e.target, (e.data as RoutedEdgeData | undefined)?.label ?? null, !!e.hidden]),
+      ]),
+    [structure],
+  );
+  const structureRef = useRef(structure);
+  useLayoutEffect(() => {
+    structureRef.current = structure; // read by the layout effect below, which runs only when the layout key changes
+  }, [structure]);
+  const [geometry, setGeometry] = useState<{ nodes: Map<string, Node>; edges: Map<string, Edge> } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const { nodes: n, edges: e } = structureRef.current;
+    layout(n, e)
+      .then((r) => live && setGeometry({ nodes: new Map(r.nodes.map((x) => [x.id, x])), edges: new Map(r.edges.map((x) => [x.id, x])) }))
+      .catch(() => live && setGeometry({ nodes: new Map(n.map((x) => [x.id, x])), edges: new Map(e.map((x) => [x.id, x])) }));
+    return () => {
+      live = false;
+    };
+  }, [layoutKey]);
+  // the current shapes and lines (status, counts), placed where the last layout put them
+  const laid = useMemo(() => {
+    if (!geometry) return null;
+    const nodes = structure.nodes.map((n) => {
+      const g = geometry.nodes.get(n.id);
+      return g ? { ...n, position: g.position, initialWidth: g.initialWidth, initialHeight: g.initialHeight } : n;
+    });
+    const edges = structure.edges.map((e) => {
+      const g = geometry.edges.get(e.id);
+      return g ? { ...e, type: g.type, data: { ...(e.data as RoutedEdgeData | undefined), ...pick(g.data as RoutedEdgeData) } } : e;
+    });
+    return { nodes, edges };
+  }, [structure, geometry]);
+  useEffect(() => {
+    if (!geometry) return;
+    nodesRef.current = [...geometry.nodes.values()];
+    const t = window.setTimeout(() => fitRef.current(), 30);
+    return () => window.clearTimeout(t);
+  }, [geometry]);
+  const nodes = useMemo(
+    () =>
+      (laid?.nodes ?? []).map((n) => ({
+        ...n,
+        selected: n.id === selectedId,
+        className: dimmed?.has(n.id) ? "opacity-30 transition-opacity" : "transition-opacity",
+      })),
+    [laid, selectedId, dimmed],
+  );
+
+  // Stepping through a run: bring the current box into view (keeping the zoom)
+  const { setCenter, getZoom } = useReactFlow();
+  useEffect(() => {
+    const n = focusId ? (laid?.nodes ?? []).find((x) => x.id === focusId) : null;
+    if (!n) return;
+    const { width, height } = sizeOf(n);
+    setCenter(n.position.x + width / 2, n.position.y + height / 2, { zoom: getZoom(), duration: document.hidden ? 0 : 300 });
+  }, [focusId, laid, setCenter, getZoom]);
+
+  // The quick view: after a short pause on a shape (or keyboard focus, or a long press on a touch screen)
+  const [glance, setGlance] = useState<{ id: string; x: number; y: number; side: "below" | "above" } | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  const glanceEl = useRef<HTMLDivElement>(null);
+  const overCard = useRef(false); // is the pointer over the quick view?
+  const showGlance = (id: string, el: Element, delay: number) => {
+    window.clearTimeout(timer.current);
+    if (id.includes(":") || id === INPUT_ID || id === OUTPUT_ID) return; // boundaries, start and result explain themselves
+    timer.current = window.setTimeout(() => {
+      const box = wrapper.current?.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      if (!box) return;
+      // below the shape (the map runs left to right, so that space is usually free), or above it when there's no room
+      const CARD_W = 320;
+      const CARD_H = 250;
+      const x = Math.max(8, Math.min(r.left - box.left, box.width - CARD_W - 8));
+      const below = r.bottom - box.top + 10;
+      const side = below + CARD_H <= box.height || r.top - box.top < CARD_H ? "below" : "above";
+      setGlance({ id, side, x, y: side === "below" ? below : r.top - box.top - 10 });
+    }, delay);
+  };
+  const hideGlance = () => {
+    window.clearTimeout(timer.current);
+    overCard.current = false;
+    setGlance(null);
+  };
+  // Leaving a shape hides the quick view after a moment, so the pointer can move onto it (it has buttons). While the
+  // pointer is over the card it stays: browsers can report "entered the card" before "left the shape", so the hide
+  // checks where the pointer is rather than relying on the order of events.
+  const leaveSoon = () => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      if (!overCard.current) setGlance(null);
+    }, 300);
+  };
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const nodeEl = (target: EventTarget | null) => (target as HTMLElement | null)?.closest?.(".react-flow__node") as HTMLElement | null;
+  const edges = useMemo(
+    () => (laid?.edges ?? []).map((e) => (dimmed?.has(e.target) ? { ...e, style: { ...e.style, opacity: 0.3 } } : e)),
+    [laid, dimmed],
+  );
 
   if (!level) return <div className="p-8 text-muted-foreground">This part of the map no longer exists.</div>;
 
@@ -234,50 +349,115 @@ function LevelView({ map, run, levelId, selectedId, onSelect, onOpen, onGoTo, to
     if (!node) return;
     e.preventDefault();
     if (node.type === "boundary") (node.data as { onOpen?: () => void }).onOpen?.();
-    else if (node.type === "trigger" || node.type === "result") onSelect(node.id);
+    else if (node.type !== "flow") onSelect(node.id);
     else if (e.key === "Enter" && (node.data as FlowNodeData).childCount > 0 && selectedId === node.id) onOpen(node.id);
     else onSelect(node.id);
   };
 
   return (
-    <div ref={wrapper} className="size-full" onKeyDown={onKeyDown}>
+    <div
+      ref={wrapper}
+      className="relative size-full"
+      onKeyDown={onKeyDown}
+      onFocusCapture={(e) => {
+        const el = nodeEl(e.target);
+        if (el?.dataset.id) showGlance(el.dataset.id, el, 0);
+      }}
+      onBlurCapture={(e) => {
+        if (!glanceEl.current?.contains(e.relatedTarget as HTMLElement | null)) hideGlance();
+      }}
+      onPointerDown={(e) => {
+        if (glanceEl.current?.contains(e.target as HTMLElement)) return;
+        const el = nodeEl(e.target);
+        if (e.pointerType === "touch" && el?.dataset.id) showGlance(el.dataset.id, el, 500); // long press
+        else hideGlance();
+      }}
+      onPointerUp={(e) => e.pointerType === "touch" && window.clearTimeout(timer.current)}
+    >
     <Canvas
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
       deleteKeyCode={null}
       panOnDrag
       selectionOnDrag={false}
-      fitView
-      fitViewOptions={{ padding: fitPadding(topInset), maxZoom: 1.15 }}
+      fitView={false} // Flowhaus fits the map itself (fit below), keeping the text readable
       minZoom={0.2}
       proOptions={{ hideAttribution: true }}
-      onNodeClick={(_, n) => (n.type === "flow" || n.type === "trigger" || n.type === "result") && onSelect(n.id)}
+      onNodeClick={(_, n) => {
+        if (n.type === "goto") onSelect((n.data as { target: string }).target);
+        else if (n.type !== "boundary") onSelect(n.id);
+      }}
       onNodeDoubleClick={(_, n) => {
         if (n.type === "flow" && (n.data as FlowNodeData).childCount > 0) onOpen(n.id);
       }}
       onPaneClick={() => onSelect(null)}
+      onNodeMouseEnter={(e, n) => n.type !== "boundary" && showGlance(n.id, e.currentTarget as Element, 450)}
+      onNodeMouseLeave={leaveSoon}
+      onMoveStart={hideGlance}
     >
     </Canvas>
+    {cropped && (
+      <p className="pointer-events-none absolute right-3 bottom-3 z-10 border border-border bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+        Scroll or drag to see the rest of the map
+      </p>
+    )}
+    {glance && (
+      <div
+        ref={glanceEl}
+        className="absolute z-20"
+        style={{ left: glance.x, top: glance.y, transform: glance.side === "above" ? "translateY(-100%)" : undefined }}
+        role="region"
+        aria-label="Quick view"
+        onPointerEnter={() => {
+          overCard.current = true;
+          window.clearTimeout(timer.current);
+        }}
+        onPointerLeave={() => {
+          overCard.current = false;
+          leaveSoon();
+        }}
+      >
+        <Glance
+          map={map}
+          run={run}
+          flowId={map.flow.id}
+          nodeId={glance.id}
+          onTry={onTry ? () => (hideGlance(), onTry(glance.id)) : undefined}
+          onOpen={map.levels[glance.id]?.children.length ? () => (hideGlance(), onOpen(glance.id)) : undefined}
+        />
+      </div>
+    )}
     </div>
   );
 }
 
-function edgeFor(source: string, target: string, map: FlowMap, run: Run | null): Edge {
+/** Where a line runs (from the layout), without its label or colour (those follow the run). */
+function pick(d: RoutedEdgeData | undefined): Pick<RoutedEdgeData, "points" | "labelAt"> {
+  return { points: d?.points, labelAt: d?.labelAt };
+}
+
+function edgeFor(source: string, target: string, map: FlowMap, run: Run | null, e?: MapEdge): Edge {
   const s = source.includes(":") ? "success" : nodeInfo(map, run, source).status;
   const t = target.includes(":") ? "not_run" : nodeInfo(map, run, target).status;
-  const flowed = s === "success";
+  // a line is dark when items went along it: its start ran and so did where it leads (a branch not taken stays grey)
+  const flowed = s === "success" && (t !== "not_run" || target.includes(":") || target === OUTPUT_ID);
   const color = t === "failed" ? "var(--color-red-400)" : flowed ? "var(--muted-foreground)" : "var(--input)";
+  // a choice's answers are numbered in the order they're checked; "Otherwise" catches the rest
+  const label = e?.label && e.order && !e.otherwise ? `${e.order}. ${e.label}` : (e?.label ?? null);
+  const data: RoutedEdgeData = { label, when: e?.when ?? null };
   return {
-    id: `${source}->${target}`,
+    id: `${source}->${target}${e?.label ? `:${e.label}` : ""}`,
     source,
     target,
-    type: "step",
+    type: "routed",
+    data,
     animated: t === "running",
     markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
-    style: { stroke: color, strokeWidth: 1.25 },
+    style: { stroke: color, strokeWidth: flowed ? 1.5 : 1.25 },
   };
 }
 

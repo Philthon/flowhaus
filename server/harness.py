@@ -31,6 +31,26 @@ import yaml
 from server import flows, maps
 
 CONTEXT_FILE = "context.yaml"
+# The one thing to do about each finding (by the part of its id before ":"), so a finding is actionable, not just a
+# diagnosis. The chat prompt (`ask`) goes further; this is the short version shown next to the finding.
+NEXT_STEP = {
+    "no_test_mode": "Add a dry-run switch to the automation (e.g. a `dry_run` input that skips publishing), then a `test:` block.",
+    "uncounted_skips": "Add a `skip` rule that counts what this step leaves out, or a log line that says why.",
+    "no_failure_rules": "Add `fail` rules for the errors you've seen, so a failed run says why in plain words.",
+    "no_log": "Point `folder_runs.log` at the script's own log file.",
+    "steps_without_file": "Add `file:` to these steps in automation.yaml (the code that does them).",
+    "rerun_unsafe": "Make it update instead of create (match on a stable id), so a re-run can't send twice.",
+    "no_kpis": "Add two `kpis` to automation.yaml: the numbers you'd check first.",
+    "unreadable": "Run `uv run flowhaus check` for this automation to see why its runs can't be read.",
+    "no_numbers": "Add counting rules for these steps from lines the log already prints, or a log line to count.",
+    "lost_between": "Find what removes them between the two steps, and make it a step with a skip reason.",
+    "appear_between": "Check the counting rules of both steps: they may count different things.",
+    "unmapped_code": "Add the files that send, filter, delete or charge to the map as steps.",
+    "cost_invisible": "Log the number of paid calls (or their cost) per run, and count it on the map.",
+    "outside_expected": "Open the last run and find the step whose numbers moved.",
+    "skips_too_many": "Look at its top skip reasons and fix the biggest one upstream.",
+    "failure_unannounced": "Turn on failure notifications where it runs (GitHub, a Slack or email step).",
+}
 MAX_TEXT = 500
 _lock = threading.Lock()
 
@@ -210,7 +230,9 @@ def review(flow_id: str) -> dict:
     a = flows.connected().get(flow_id)
     if a is not None:
         cfg, steps = a.config, a.steps
-        edges = list(zip(steps, steps[1:]))  # a connected automation's map is a chain
+        by_id = {s["id"]: s for s in steps}
+        edges = [(by_id[e["source"]], by_id[e["target"]]) for e in maps.chain_edges(steps)  # incl. branches
+                 if e["source"] in by_id and e["target"] in by_id]
         kind = cfg.get("type")
     else:  # built in Flowhaus: runs here, counts every item and every paid call, tests locally
         fmap = flows.get_map(flow_id)
@@ -243,7 +265,8 @@ def review(flow_id: str) -> dict:
 
     def gap(id_, level, title, detail, practice=None, node_id=None, ask=None, kind_="gap"):
         findings.append({"id": id_, "kind": kind_, "level": level, "title": title, "detail": detail,
-                         "practice": practice, "node_id": node_id, "ask": ask})
+                         "practice": practice, "node_id": node_id, "ask": ask,
+                         "next_step": NEXT_STEP.get(id_.split(":")[0])})
 
     def blind(id_, level, title, detail, **kw):
         gap(id_, level, title, detail, kind_="blind_spot", **kw)
@@ -318,8 +341,13 @@ def review(flow_id: str) -> dict:
         blind("unreadable", "error", "Flowhaus couldn't read the latest runs", err)
 
     if ok_runs:
-        dark = [s for s in steps if all((r["nodes"].get(s["id"]) or {}).get("rows_out") is None
-                                        and (r["nodes"].get(s["id"]) or {}).get("rows_in") is None for r in ok_runs[:3])]
+        def ran_without_numbers(step: dict) -> bool:
+            # judged only by runs that went through the step: a path not taken isn't a blind spot
+            seen = [n for r in ok_runs[:10] if (n := r["nodes"].get(step["id"]) or {}).get("status", "not_run") != "not_run"][:3]
+            return bool(seen) and all(n.get("rows_in") is None and n.get("rows_out") is None for n in seen)
+
+        dark = [s for s in steps if maps.kind_of(s) in ("action", "wait")  # decisions and ends choose, they don't count
+                and ran_without_numbers(s)]
         if dark and len(dark) < len(steps):
             blind("no_numbers:" + _key(*[s["id"] for s in dark]), "warn" if len(dark) > 1 else "info",
                   f"No numbers for {_short([f'“{_label(s)}”' for s in dark], 2)}",
@@ -379,7 +407,8 @@ def review(flow_id: str) -> dict:
     exp = None
     if outs:
         lo, hi = min(outs), max(outs)
-        options = [{"value": f"{max(0, int(lo * 0.5))}-{int(hi * 1.5) + 1}", "label": f"Roughly {lo:,}–{hi:,}, like lately"}
+        lately = f"{lo:,}" if lo == hi else f"{lo:,}–{hi:,}"
+        options = [{"value": f"{max(0, int(lo * 0.5))}-{int(hi * 1.5) + 1}", "label": f"Roughly {lately}, like lately"}
                    ] if hi > 0 else []
         options += [{"value": "1-", "label": f"At least one {item}"}, {"value": "any", "label": "Any number, even none"}]
         exp = question({"id": "expected_output", "title": f"How many {items} should a normal run produce?",
@@ -438,10 +467,12 @@ def review(flow_id: str) -> dict:
     answered = [{"id": k, "answer": said(k, v.get("answer")), "note": v.get("note"), "at": v.get("at"),
                  "title": asked.get(k, {}).get("title", k)} for k, v in ctx["answers"].items()]
     # coverage: how much of the automation Flowhaus can actually see (like test/doc coverage in dbt-project-evaluator)
-    seen = sum(1 for s in steps if last and ((n := last["nodes"].get(s["id"]) or {}).get("rows_out") is not None
-                                             or n.get("rows_in") is not None))
-    coverage = {"steps": len(steps), "with_numbers": seen if last else None,
-                "linked_to_code": sum(1 for s in steps if s.get("file")),
+    # only steps that handle items count: decisions and ends choose or finish, they have no numbers of their own
+    counted = [s for s in steps if maps.kind_of(s) in ("action", "wait")]
+    seen = sum(1 for s in counted if last and ((n := last["nodes"].get(s["id"]) or {}).get("rows_out") is not None
+                                               or n.get("rows_in") is not None))
+    coverage = {"steps": len(counted), "with_numbers": seen if last else None,
+                "linked_to_code": sum(1 for s in counted if s.get("file")),
                 "questions_answered": len([q for q in asked if q in answers]), "questions": len(asked)}
     return {"findings": findings, "questions": questions, "dismissed": dismissed, "answered": answered,
             "notes": ctx["notes"], "coverage": coverage, "context_file": _shown_path(_context_path(flow_id))}

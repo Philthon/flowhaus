@@ -1,18 +1,25 @@
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, ExternalLink, FlaskConical, Loader2, MessageSquare, Play, Search } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ChevronDown, ClipboardCheck, ExternalLink, FlaskConical, Lightbulb, Loader2, MessageSquare, Play, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChatPanel, type ChatHandle } from "@/components/chat/ChatPanel";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { FlowCanvas, nodeInfo } from "@/components/flow/FlowCanvas";
+import { FlowCanvas } from "@/components/flow/FlowCanvas";
+import { nodeInfo, OUTPUT_ID } from "@/lib/mapinfo";
+import { StepThrough } from "@/components/flow/StepThrough";
 import { PreviewPanel } from "@/components/preview/PreviewPanel";
+import { ReplayPanel } from "@/components/preview/Replay";
+import { ReviewPanel } from "@/components/flow/Review";
 import { Button } from "@/components/ui/button";
-import { api, type ContactMatch, type FlowMap, type Run, type RunSummary } from "@/lib/api";
-import { Insights } from "@/components/flow/Insights";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { laterThan, playOrder } from "@/lib/playback";
+import { api, type Checkup, type ContactMatch, type FlowMap, type Run, type RunSummary } from "@/lib/api";
+import { reviewSignal } from "@/lib/review";
+import { StatusStrip } from "@/components/flow/StatusStrip";
 import { TestLab } from "@/components/test/TestLab";
 import { LevelMiniMap } from "@/components/flow/LevelMiniMap";
 import { TermsContext, useTerms } from "@/lib/terms";
 import { EnabledToggle } from "@/components/EnabledToggle";
-import { timeAgo } from "@/pages/FlowsPage";
+import { formatRunTime, timeAgo } from "@/lib/time";
 import { STATUS_LABEL, STATUS_STYLE } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
@@ -31,11 +38,6 @@ function ancestorsOf(map: FlowMap, id: string): string[] {
   return chain;
 }
 
-export function formatRunTime(r: { started_at: string }) {
-  const d = new Date(r.started_at);
-  const today = new Date().toDateString() === d.toDateString();
-  return d.toLocaleString(undefined, today ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { dateStyle: "short", timeStyle: "short" });
-}
 
 type Props = { flowId: string | null; initialRunId?: string | null; onBack: () => void };
 
@@ -53,6 +55,7 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
   const [levelPath, setLevelPath] = useState<string[]>([]);
   const [direction, setDirection] = useState<"in" | "out">("in");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [panelTab, setPanelTab] = useState<{ tab: string; n: number } | null>(null);
   const [testing, setTesting] = useState(false);
   const [focusRowId, setFocusRowId] = useState<number | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
@@ -87,13 +90,19 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
     if (map) document.title = `${map.title} · Flowhaus`;
   }, [map]);
 
+  // the map is polled while the chat works: only a real change counts as a new version (it re-runs the Review)
+  const mapJson = useRef("");
   const refreshMap = useCallback(() => {
     if (!flowId) return;
     api
       .map(flowId)
       .then((m) => {
-        setMap(m);
-        setMapVersion((v) => v + 1);
+        const json = JSON.stringify(m);
+        if (json !== mapJson.current) {
+          mapJson.current = json;
+          setMap(m);
+          setMapVersion((v) => v + 1);
+        }
         setLoadError(null);
       })
       .catch((e) => setLoadError(`Could not load the map: ${e.message}. Is the server running on port 8000?`));
@@ -111,8 +120,11 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
       document.title = "New flow · Flowhaus";
       return;
     }
+    // loading the flow: state is set when the server answers, not synchronously (the rule can't see into the calls)
+    /* oxlint-disable react/set-state-in-effect */
     refreshMap();
     refreshRuns().then((rs) => setRunId((cur) => cur ?? latestReal(rs)?.run_id ?? null)).catch(() => {});
+    /* oxlint-enable react/set-state-in-effect */
     api.inputs(flowId).then((i) => {
       setInputs(i.inputs);
       setInputFile(i.default);
@@ -165,14 +177,14 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
     };
   }, [runId, refreshRuns, flowId]);
 
-  // If the level we are on disappeared after a map change, walk back up.
-  useEffect(() => {
-    if (!map) return;
+  // If the level we are on, or the selected box, disappeared after a map change, walk back up. Adjusted while
+  // rendering (it settles in one pass) so the map never draws a level that's gone.
+  if (map) {
     const valid = levelPath.filter((id) => map.levels[id]);
     if (valid.length !== levelPath.length) setLevelPath(valid);
     if (selectedId && !selectedId.startsWith("__") && !map.groups.some((g) => g.id === selectedId) && !map.steps.some((s) => s.id === selectedId))
       setSelectedId(null);
-  }, [map, levelPath, selectedId]);
+  }
 
   const startRun = async () => {
     if (!flowId) return;
@@ -232,6 +244,63 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
   const selected = map && selectedId ? nodeInfo(map, run, selectedId) : null;
   const failedStepId = run?.status === "failed" ? run.error?.node_id ?? null : null;
 
+  // Stepping through the run on this level: the map shows the run as it stood after each step
+  const [play, setPlay] = useState<{ level: string; run: string; i: number } | null>(null);
+  const [replaying, setReplaying] = useState<string | null>(null); // a run replayed in test mode
+  const [reviewOpen, setReviewOpen] = useState(false); // the Review drawer next to the map
+  // the checkup, fetched once and shared: the status strip, the chat's opener and the Review read the same answer
+  // keyed by what it was asked for, so "loading" is simply "the answer we have is for an older question"
+  const [reviewAsk, setReviewAsk] = useState(0); // bumped to review again (after a dismiss, an answer, the button)
+  const reviewKey = `${flowId}-${runId}-${runs.length}-${runs[0]?.run_id}-${runs[0]?.status}-${run?.status}-${mapVersion}-${reviewAsk}`;
+  const [reviewed, setReviewed] = useState<{ key: string; review: Checkup | null } | null>(null);
+  const review = reviewed?.review ?? null;
+  const reviewLoading = !!flowId && reviewed?.key !== reviewKey;
+  useEffect(() => {
+    if (!flowId) return;
+    let live = true;
+    api.checkup(flowId, runId).then(
+      (r) => live && setReviewed({ key: reviewKey, review: r }),
+      () => live && setReviewed({ key: reviewKey, review: null }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [flowId, runId, reviewKey]);
+  const loadReview = useCallback(() => {
+    setReviewAsk((n) => n + 1);
+    return Promise.resolve();
+  }, []);
+  const replayRun = replaying && replaying === run?.run_id ? replaying : null;
+  const playList = map ? playOrder(map, run, levelId) : [];
+  const playing = play && play.level === levelId && play.run === run?.run_id && play.i < playList.length ? play.i : null;
+  // while stepping, the boxes still to come (and the result, until the last step) are dimmed; the map pans to the step
+  const dimmed = map && playing != null ? laterThan(map, playList, playing) : null;
+  if (dimmed && playing != null && playing < playList.length - 1) dimmed.add(OUTPUT_ID);
+  const playTo = (i: number) => {
+    if (!run) return;
+    setPlay({ level: levelId, run: run.run_id, i });
+    setSelectedId(playList[i]);
+    setFocusRowId(null);
+    setPanelTab((t) => ({ tab: "preview", n: (t?.n ?? 0) + 1 }));
+  };
+  /** The Review: errors and improvements, each with its next step. */
+  const openReview = () => {
+    setTesting(false);
+    setReviewOpen((o) => !o);
+  };
+  /** "Test a step": the selected box, or else the first box on this level that can be tested, with its Test tab open. */
+  const testStep = () => {
+    if (!map) return;
+    const level = map.levels[levelId];
+    const ids = [...(selectedId ? [selectedId] : []), ...(playList.length ? playList : (level?.children ?? []))];
+    const id = ids.find((x) => tryMode(map, x));
+    if (!id) return;
+    setReplaying(null);
+    setSelectedId(id);
+    setFocusRowId(null);
+    setPanelTab((t) => ({ tab: "try", n: (t?.n ?? 0) + 1 }));
+  };
+
   const onChatRun = useCallback(
     (id: string, runFlowId?: string) => {
       if (runFlowId && runFlowId !== flowId) return; // the agent ran another flow
@@ -267,6 +336,7 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
       onMapChanged={refreshMap}
       onFlowCreated={onFlowCreated}
       onCollapse={flowId ? () => setChatOpen(false) : undefined}
+      plan={review?.plan ?? null}
     />
   );
 
@@ -329,6 +399,31 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
             onRun={startRun}
             testing={testing}
             onToggleTest={() => setTesting((t) => !t)}
+            onReview={openReview}
+            review={review}
+            onTestStep={() => {
+              setTesting(false);
+              testStep();
+            }}
+            onReplay={
+              map.flow.kind !== "connected" && run && run.status !== "running"
+                ? () => {
+                    setTesting(false);
+                    setSelectedId(null);
+                    setPlay(null);
+                    setReplaying(run.run_id);
+                  }
+                : undefined
+            }
+            onStepThrough={
+              run && run.status !== "running" && playList.length > 1
+                ? () => {
+                    setTesting(false);
+                    setReplaying(null);
+                    playTo(0);
+                  }
+                : undefined
+            }
             onFound={(m) => {
               if (m.step_id) {
                 reveal(m.step_id);
@@ -337,20 +432,22 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
             }}
           />
 
-          {run?.status === "failed" && run.error && (
-            <FailureBanner map={map} run={run} failedStepId={failedStepId} onShow={() => failedStepId && reveal(failedStepId)} />
+          {!testing && (
+            <StatusStrip
+              review={review}
+              failure={
+                run?.status === "failed" && run.error
+                  ? { where: failurePath(map, run, failedStepId), message: run.error.message }
+                  : null
+              }
+              mapProblems={agentBusy ? [] : map.problems}
+              onShowFailure={failedStepId ? () => reveal(failedStepId) : undefined}
+              onOpenReview={() => setReviewOpen((o) => !o)}
+            />
           )}
           {agentBusy && (
-            <div className="flex items-center gap-2 border-b border-sky-100 bg-sky-50 px-4 py-2 text-sm text-sky-800">
-              <Loader2 className="size-4 animate-spin" /> Claude is working on this flow. The map updates as it goes.
-            </div>
-          )}
-          {!agentBusy && map.problems.length > 0 && (
-            <div className="flex items-start gap-2 border-b bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-              <div>
-                <b>The map is out of date with the code:</b> {map.problems.join(" · ")}
-              </div>
+            <div className="flex items-center gap-2 border-b tone-info px-4 py-2 text-sm">
+              <Loader2 className="size-4 animate-spin" /> The chat is working on this flow. The map updates as it goes.
             </div>
           )}
 
@@ -361,51 +458,99 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
                 setTesting(false);
                 refreshRuns().then(() => setRunId(id));
               }}
+              onAsk={ask}
             />
           ) : (
-          <>
-          {flowId && <Insights flowId={flowId} refreshKey={`${runs.length}-${runs[0]?.run_id}-${runs[0]?.status}`} onShowStep={reveal} onAsk={ask} />}
-
-          <div className={cn("relative min-h-0", selectedId ? "flex-[1_1_50%]" : "flex-1")}>
+          <div className="flex min-h-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col">
+          <div className={cn("relative min-h-0", selectedId || replayRun ? "flex-[1_1_50%]" : "flex-1")}>
             <ErrorBoundary resetKey={`${levelId}-${runId}-${mapVersion}`}>
             <FlowCanvas
               map={map}
               run={run}
+              dimmed={dimmed}
+              focusId={playing != null ? playList[playing] : null}
               levelId={levelId}
               direction={direction}
               selectedId={selectedId}
               onSelect={(id) => {
                 setSelectedId(id);
                 setFocusRowId(null);
+                if (id) setReplaying(null);
               }}
               onOpen={open}
               onGoTo={goToBoundary}
+              onTry={(id) => {
+                setSelectedId(id);
+                setFocusRowId(null);
+                setPanelTab((t) => ({ tab: "try", n: (t?.n ?? 0) + 1 }));
+              }}
               topInset={levelPath.length > 0 ? miniMapHeight + 12 : 0}
             />
             </ErrorBoundary>
-            {levelPath.length > 0 && <Breadcrumb map={map} levelPath={levelPath} onCrumb={goUpTo} />}
             {levelPath.length > 0 && (
             <LevelMiniMap
               map={map}
               run={run}
               levelPath={levelPath}
-              selectedId={selectedId}
               onOpen={open}
-              onReveal={reveal}
               onRoot={() => goUpTo(-1)}
+              onBack={() => goUpTo(levelPath.length - 2)}
               onHeight={setMiniMapHeight}
             />
             )}
             <Legend />
+            {run && playing != null && (
+              <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+                <StepThrough
+                  labels={playList.map((id) => nodeInfo(map, run, id).label)}
+                  index={playing}
+                  onIndex={playTo}
+                  onStop={() => setPlay(null)}
+                />
+              </div>
+            )}
           </div>
 
-          {selectedId && selected && (
+          {replayRun && flowId ? (
+            <div className="min-h-0 flex-[1_1_50%]">
+              <ReplayPanel key={replayRun} flowId={flowId} runId={replayRun} onClose={() => setReplaying(null)} onAsk={ask} />
+            </div>
+          ) : selectedId && selected && (
             <div className="min-h-0 flex-[1_1_50%]">
               <ErrorBoundary resetKey={`${selectedId}-${runId}-${run?.status}`}>
               <PreviewPanel
                 nodeId={selectedId}
                 label={selected.label}
                 description={selected.description}
+                about={(() => {
+                  const step = map.steps.find((x) => x.id === selectedId);
+                  const group = map.groups.find((g) => g.id === selectedId);
+                  if (!step && !group) return null;
+                  // everything after this step (or this group's steps), in map order: what a change here can reach
+                  const start = step ? [step.id] : map.steps.filter((x) => x.group === selectedId).map((x) => x.id);
+                  const seen = new Set(start);
+                  const queue = [...start];
+                  while (queue.length) {
+                    const id = queue.shift()!;
+                    for (const e of map.edges)
+                      if (e.source === id && !seen.has(e.target)) {
+                        seen.add(e.target);
+                        queue.push(e.target);
+                      }
+                  }
+                  const after = map.steps.filter((x) => seen.has(x.id) && !start.includes(x.id)).map((x) => x.label ?? x.id);
+                  return { explain: step?.explain, example: step?.example, file: step?.file, app: step?.app, after };
+                })()}
+                decision={(() => {
+                  const step = map.steps.find((x) => x.id === selectedId);
+                  if (step?.kind !== "decision") return null;
+                  const name = (id: string) => map.steps.find((x) => x.id === id)?.label ?? id;
+                  return {
+                    rule: step.rule,
+                    paths: (step.branches ?? []).map((b) => ({ label: b.label ?? "", to: name(b.to), when: b.when })),
+                  };
+                })()}
                 isGroup={selected.isGroup}
                 flowId={flowId}
                 hasCode={map.flow.kind !== "sample" && map.flow.kind !== "connected"}
@@ -417,11 +562,27 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
                 onAsk={ask}
                 onGoToStep={reveal}
                 focusRowId={focusRowId}
+                tryable={tryMode(map, selectedId)}
+                openTab={panelTab}
               />
               </ErrorBoundary>
             </div>
           )}
-          </>
+          </div>
+          {reviewOpen && flowId && (
+            <aside className="w-[min(28rem,42%)] shrink-0 border-l">
+              <ReviewPanel
+                flowId={flowId}
+                review={review}
+                loading={reviewLoading}
+                onReload={loadReview}
+                onClose={() => setReviewOpen(false)}
+                onShowStep={reveal}
+                onAsk={ask}
+              />
+            </aside>
+          )}
+          </div>
           )}
         </main>
         )}
@@ -431,6 +592,15 @@ export function FlowPage({ flowId: initialFlowId, initialRunId, onBack }: Props)
 }
 
 const DEFAULT_TERMS = { item: "item", items: "items" };
+
+/** Can this box be tried on edited items? Steps and groups can; decisions and ends just route. Connected
+ *  automations run elsewhere, so there the chat predicts instead of running. */
+function tryMode(map: FlowMap, id: string): "run" | "predict" | null {
+  const step = map.steps.find((s) => s.id === id);
+  if (!step && !map.groups.some((g) => g.id === id)) return null;
+  if (step?.kind === "decision" || step?.kind === "end") return null;
+  return map.flow.kind === "connected" ? "predict" : "run";
+}
 
 const NARROW = "(max-width: 900px)";
 
@@ -448,28 +618,22 @@ function useNarrow(): boolean {
 }
 
 /** The newest run that isn't a test run: what the map shows by default. Test runs are opened from the test lab. */
-const latestReal = (rs: RunSummary[]) => rs.find((r) => r.trigger !== "test") ?? rs[0];
+const isTestRun = (r?: RunSummary | null) => !!(r?.test_mode ?? r?.trigger === "test");
+const latestReal = (rs: RunSummary[]) => rs.find((r) => !isTestRun(r)) ?? rs[0];
 
-function FailureBanner({ map, run, failedStepId, onShow }: { map: FlowMap; run: Run; failedStepId: string | null; onShow: () => void }) {
-  const path = failedStepId ? [...ancestorsOf(map, failedStepId), failedStepId].map((id) => nodeInfo(map, run, id).label) : [];
-  return (
-    <div className="flex items-center gap-3 border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-800">
-      <AlertTriangle className="size-4 shrink-0" />
-      <p className="line-clamp-2 min-w-0 flex-1" title={run.error?.message}>
-        <b>This run failed{path.length ? ` in ${path.join(" › ")}` : ""}.</b> {run.error?.message}
-      </p>
-      {failedStepId && (
-        <Button size="sm" variant="outline" className="shrink-0 border-red-200 bg-card text-red-800 hover:bg-red-100" onClick={onShow}>
-          Show me
-        </Button>
-      )}
-    </div>
-  );
+/** Where a run failed, as the path of boxes leading to the failed step ("Find or create › Create the account"). */
+function failurePath(map: FlowMap, run: Run, failedStepId: string | null): string {
+  if (!failedStepId) return "a step";
+  return [...ancestorsOf(map, failedStepId), failedStepId].map((id) => nodeInfo(map, run, id).label).join(" › ");
 }
 
 type TopBarProps = {
   testing: boolean;
   onToggleTest: () => void;
+  onTestStep: () => void;
+  onReview: () => void;
+  onReplay?: () => void;
+  onStepThrough?: () => void;
   map: FlowMap;
   flowId: string;
   onBack: () => void;
@@ -483,11 +647,32 @@ type TopBarProps = {
   onPickInput: (f: string) => void;
   onRun: () => void;
   onFound: (m: ContactMatch) => void;
+  /** The Review button shows the worst open error, or a light bulb for improvements; a P0 turns Run red. */
+  review: Checkup | null;
 };
+
+function TestItem({ title, hint, onClick }: { title: string; hint: string; onClick: () => void }) {
+  return (
+    <DropdownMenuItem onClick={onClick} className="flex-col items-start gap-0 rounded-none px-3 py-2">
+      <span className="text-sm font-medium">{title}</span>
+      <span className="text-xs text-muted-foreground">{hint}</span>
+    </DropdownMenuItem>
+  );
+}
+
+const REVIEW_SAYS = {
+  error: "a critical error is open",
+  warn: "errors to look at",
+  idea: "ideas to make this flow better",
+  none: "nothing open",
+} as const;
 
 function TopBar(p: TopBarProps) {
   const running = p.run?.status === "running";
   const latest = latestReal(p.runs)?.run_id;
+  const signal = reviewSignal(p.review);
+  const critical = signal.critical;
+  const ReviewIcon = { error: AlertTriangle, warn: AlertTriangle, idea: Lightbulb, none: ClipboardCheck }[signal.tone];
   return (
     <div className="@container flex items-center gap-2 border-b px-3 py-2">
       <Button variant="ghost" size="icon" onClick={p.onBack} title="All flows" aria-label="Back to all flows" className="shrink-0">
@@ -504,7 +689,7 @@ function TopBar(p: TopBarProps) {
             </span>
           )}
           {!p.map.flow.enabled && (
-            <span className="shrink-0 bg-amber-100 px-1.5 text-[10px] font-medium text-amber-900">Off</span>
+            <span className="shrink-0 tone-warn px-1.5 text-[10px] font-medium">Off</span>
           )}
         </div>
         {/* Second line: which run you're looking at (doubles as the run picker), and where it lives */}
@@ -514,7 +699,7 @@ function TopBar(p: TopBarProps) {
             <span className="truncate">
               {p.runs.length === 0
                 ? "No runs yet"
-                : `${p.run?.trigger === "test" ? "Test run" : p.runId === latest ? "Latest run" : "Earlier run"} · ${p.run ? STATUS_LABEL[p.run.status] : "…"} ${p.run ? timeAgo(p.run.started_at) : ""}`}
+                : `${isTestRun(p.run) ? "Test run" : p.runId === latest ? "Latest run" : "Earlier run"} · ${p.run ? STATUS_LABEL[p.run.status] : "…"} ${p.run ? timeAgo(p.run.started_at) : ""}`}
             </span>
             {p.runs.length > 1 && <ChevronDown className="size-3 shrink-0" />}
             {p.runs.length > 0 && (
@@ -527,9 +712,9 @@ function TopBar(p: TopBarProps) {
                 {p.runs.map((r) => (
                   <option key={r.run_id} value={r.run_id}>
                     {r.run_id === latest ? "Latest · " : ""}
-                    {r.trigger === "test" ? "Test run · " : ""}
+                    {isTestRun(r) ? "Test run · " : ""}
                     {formatRunTime(r)} · {STATUS_LABEL[r.status]}
-                    {p.inputs.length > 1 && r.trigger !== "test" ? ` · ${r.input_file.split("/").pop()}` : ""}
+                    {p.inputs.length > 1 && !isTestRun(r) ? ` · ${r.input_file.split("/").pop()}` : ""}
                   </option>
                 ))}
               </select>
@@ -546,17 +731,43 @@ function TopBar(p: TopBarProps) {
         </div>
       </div>
 
-      {p.map.flow.kind !== "sample" && (
+      {!p.testing && (
         <Button
-          variant={p.testing ? "default" : "outline"}
+          variant="outline"
           size="sm"
-          onClick={p.onToggleTest}
-          aria-pressed={p.testing}
-          title={p.testing ? "Back to the map" : "Test lab: pressure-test this flow with test items"}
           className="shrink-0"
+          onClick={p.onReview}
+          aria-label={`Review: ${REVIEW_SAYS[signal.tone]}`}
+          title={`Review: ${REVIEW_SAYS[signal.tone]}`}
         >
-          <FlaskConical /> <span className="hidden @md:inline">{p.testing ? "Back to map" : "Test"}</span>
+          <ReviewIcon
+            className={cn(signal.tone === "error" ? "text-red-600" : signal.tone === "warn" || signal.tone === "idea" ? "text-amber-500" : undefined)}
+          />
+          <span className="hidden @md:inline">Review</span>
+          {signal.count > 0 && <span className="text-xs tabular-nums text-muted-foreground">{signal.count}</span>}
         </Button>
+      )}
+      {p.testing ? (
+        <Button variant="default" size="sm" onClick={p.onToggleTest} aria-pressed className="shrink-0" aria-label="Back to map">
+          <FlaskConical /> <span className="hidden @md:inline">Back to map</span>
+        </Button>
+      ) : (
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="shrink-0" aria-label="Test" />}>
+            <FlaskConical /> <span className="hidden @md:inline">Test</span> <ChevronDown className="size-3.5" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-72 rounded-none p-0 shadow-none ring-0 border border-foreground/20">
+            <TestItem
+              title="Test a step with different input"
+              hint={p.map.flow.kind === "connected" ? "The chat predicts what a step would do with items you change" : "Runs one step, and what follows, on items you change"}
+              onClick={p.onTestStep}
+            />
+            {p.onStepThrough && <TestItem title="Step through this run" hint="The recorded run, one box at a time; nothing runs" onClick={p.onStepThrough} />}
+            {p.onReplay && <TestItem title="Replay this run" hint="The same items through the flow as it is now, compared with what came out" onClick={p.onReplay} />}
+            {p.map.flow.kind !== "sample" && <TestItem title="Test lab" hint="Many test items through the whole flow, checked one by one" onClick={p.onToggleTest} />}
+            <p className="border-t px-3 py-2 text-[11px] text-muted-foreground">Tests never publish, send or change anything real.</p>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
       <span className="hidden @lg:contents">
         <ContactFinder flowId={p.flowId} runId={p.runId} map={p.map} onFound={p.onFound} />
@@ -604,7 +815,14 @@ function TopBar(p: TopBarProps) {
           </a>
         )
       ) : (
-        <Button size="sm" onClick={p.onRun} disabled={running}>
+        <Button
+          size="sm"
+          onClick={p.onRun}
+          disabled={running}
+          className={cn(critical && "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-500")}
+          title={critical ? `Critical (P0): ${critical.title}. Fix it first, or run anyway.` : undefined}
+          aria-label={critical ? "Run (a critical problem is open)" : undefined}
+        >
           {running ? <Loader2 className="animate-spin" /> : <Play />} Run
         </Button>
       )}
@@ -619,10 +837,7 @@ function ContactFinder({ flowId, runId, map, onFound }: { flowId: string; runId:
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    if (!runId || q.trim().length < 2) {
-      setMatches(null);
-      return;
-    }
+    if (!runId || q.trim().length < 2) return;
     const t = window.setTimeout(() => api.findContact(flowId, runId, q).then((r) => setMatches(r.matches)).catch(() => {}), 150);
     return () => window.clearTimeout(t);
   }, [q, runId, flowId]);
@@ -658,7 +873,7 @@ function ContactFinder({ flowId, runId, map, onFound }: { flowId: string; runId:
           aria-label={`Find a ${terms.item} in this run`}
         />
       </label>
-      {open && matches && (
+      {open && matches && runId && q.trim().length >= 2 && (
         <div className="absolute right-0 z-50 mt-1 max-h-80 w-96 overflow-auto rounded-md border bg-popover p-1 text-sm shadow-lg">
           {matches.length === 0 && <p className="p-2 text-muted-foreground">No {terms.item} matches “{q}” in this run.</p>}
           {matches.map((m) => (
@@ -694,39 +909,6 @@ function ContactFinder({ flowId, runId, map, onFound }: { flowId: string; runId:
         </div>
       )}
     </div>
-  );
-}
-
-function Breadcrumb({ map, levelPath, onCrumb }: { map: FlowMap; levelPath: string[]; onCrumb: (i: number) => void }) {
-  const labelOf = (id: string) => map.groups.find((g) => g.id === id)?.label ?? id;
-  return (
-    <nav
-      aria-label="Where you are in the map"
-      className="absolute top-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-1 border border-border bg-card p-1 text-sm"
-    >
-      {levelPath.length > 0 && (
-        <Button variant="ghost" size="sm" onClick={() => onCrumb(levelPath.length - 2)} title="Back up one level (Esc)">
-          <ArrowLeft /> Back
-        </Button>
-      )}
-      <button
-        onClick={() => onCrumb(-1)}
-        className={cn("truncate rounded px-2 py-1 hover:bg-muted", levelPath.length === 0 ? "font-semibold" : "text-muted-foreground")}
-      >
-        {map.title}
-      </button>
-      {levelPath.map((id, i) => (
-        <span key={id} className="flex min-w-0 items-center gap-1">
-          <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-          <button
-            onClick={() => onCrumb(i)}
-            className={cn("truncate rounded px-2 py-1 hover:bg-muted", i === levelPath.length - 1 ? "font-semibold" : "text-muted-foreground")}
-          >
-            {labelOf(id)}
-          </button>
-        </span>
-      ))}
-    </nav>
   );
 }
 
@@ -791,7 +973,7 @@ function BuilderWelcome({ onBack, onAsk }: { onBack: () => void; onAsk: (t: stri
         <div className="max-w-xl space-y-4 text-center">
           <h2 className="text-lg font-semibold">Describe what you want to automate</h2>
           <p className="text-sm text-muted-foreground">
-            Tell Claude in the chat what should happen, in your own words. It sets up the steps, connects the apps (Clay and
+            Tell the chat what should happen, in your own words. It sets up the steps, connects the apps (Clay and
             Firecrawl are available as dummies), makes sample data and runs it once so you can check what goes in and out.
           </p>
           <div className="space-y-2 text-left">

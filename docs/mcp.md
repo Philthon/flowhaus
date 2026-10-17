@@ -1,6 +1,6 @@
 # Tools for the chat (MCP)
 
-The chat can use the [MCP](https://modelcontextprotocol.io) servers **you already set up** for Claude Code, Claude Desktop or Cursor: n8n, a database, your issue tracker and so on. Flowhaus keeps no MCP configuration and no keys of its own. It reads your existing setup and you choose which servers the chat may use.
+The chat can use the [MCP](https://modelcontextprotocol.io) servers **you already set up** for Claude Code, Claude Desktop, Cursor or Codex: n8n, a database, your issue tracker and so on. Flowhaus keeps no MCP configuration and no keys of its own. It reads your existing setup and you choose which servers the chat may use.
 
 ## Where servers are found
 
@@ -13,6 +13,7 @@ Flowhaus only reads these files; it never writes them:
 | Claude Code, for you ("user" scope) | `~/.claude.json` → `mcpServers` |
 | Claude Desktop | `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`) |
 | Cursor | `~/.cursor/mcp.json` |
+| Codex | `~/.codex/config.toml` (or `$CODEX_HOME`) → `[mcp_servers.<name>]`, and `.codex/config.toml` in a project |
 
 If two files define the same name, the most specific one wins (top of the table first). `${VAR}` and `${VAR:-default}` in those files are filled in from the environment Flowhaus was started in, the same way Claude Code does it.
 
@@ -25,6 +26,12 @@ Nothing is used until you switch it on:
 - **Terminal:** `uv run flowhaus mcp` lists them. `uv run flowhaus mcp enable n8n` and `uv run flowhaus mcp disable n8n` switch one on or off.
 
 The only thing Flowhaus stores is the list of names you switched on, in `state/mcp.json`. Changes apply from your next chat message.
+
+To see what a server can do, click **Show its tools** on the Apps page. Flowhaus starts the server briefly with your settings, lists each tool, and says whether it asks you first.
+
+For servers that come from Codex:
+- `env_vars` are forwarded from your environment, and `bearer_token_env_var` becomes the `Authorization` header.
+- Servers that sign in through Codex's own OAuth can't be reused; Flowhaus says so.
 
 ## Every call asks first
 

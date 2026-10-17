@@ -11,6 +11,20 @@ Open it with **Test** on any flow's page, or from a terminal:
 uv run flowhaus test <id> --generate 20 --temperature 0.8
 ```
 
+## Test a step, replay a run, step through a run
+
+Everything for testing is under **Test** at the top of a flow's page:
+
+| | What it does | Where else |
+|---|---|---|
+| **Test a step with different input** | Change the items a step got (or type new ones) and run that step, and if you like everything after it. Shows what happened to each item at each step, and what comes out. | The step's **Test** tab, or **Test with different input** in the quick view |
+| **Replay this run** | Sends a past run's items through the flow as it is now and compares what comes out with what that run gave: same result, or which items would come out differently and why. Use it after a change, before it runs for real. | |
+| **Test lab** | Many test items through the whole flow, checked one by one (below). | |
+
+**Step through this run** (in the **Test** menu) walks through a recorded run one box at a time (◀ ▶ or the arrow keys). The map pans to each box and shows the run as it stood then, and the panel shows that step's items before and after. Nothing runs.
+
+Testing a step and replaying a run happen in **test mode**, like the test lab: demo connectors only, output to a scratch folder, nothing added to the run history, and inside the test-mode sandbox (no network, no writes outside the scratch folder; see [SECURITY.md](../SECURITY.md)). They work for flows built in Flowhaus and the demos. Connected automations run where they live, so Flowhaus can't run their steps; there the chat predicts the result from the code and says it's a prediction.
+
 ## Test items and the temperature
 
 Test items are saved per flow in `state/tests/<flow>/suite.json`. You edit them in a table, or generate them from the flow's sample data (or `test.examples`). The **temperature** decides how tricky generated items are:

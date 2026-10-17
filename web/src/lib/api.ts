@@ -10,17 +10,35 @@ export type Step = {
   file: string | null;
   line: number | null;
   inputs: string[];
+  /** Flowchart shape: action (box), decision (diamond), wait (cut corners), end (pill). */
+  kind?: "action" | "decision" | "wait" | "end";
+  /** For a decision: the rule it applies, in words. */
+  rule?: string | null;
+  /** The logic in one or two plain sentences (written by the setup agent), for the quick view and "About". */
+  explain?: string | null;
+  /** A made-up example, shown when there's no real one from a run. */
+  example?: string | null;
+  branches?: { label?: string; to: string; when?: string | null }[];
+};
+export type MapEdge = {
+  source: string;
+  target: string;
+  label?: string | null;
+  when?: string | null;
+  /** A choice (3+ answers): the order its answers are checked in, and whether this one is the catch-all. */
+  order?: number;
+  otherwise?: boolean;
 };
 export type Level = {
   children: string[];
-  edges: { source: string; target: string }[];
+  edges: MapEdge[];
   inbound: { from: string; target: string }[];
   outbound: { source: string; to: string }[];
 };
 export type FlowMap = {
   groups: Group[];
   steps: Step[];
-  edges: { source: string; target: string }[];
+  edges: MapEdge[];
   title: string;
   flow: FlowMeta;
   levels: Record<string, Level>;
@@ -44,6 +62,8 @@ export type RunSummary = {
   finished_at: string | null;
   input_file: string;
   trigger: string;
+  /** Not a real run: the test lab, the chat's runs and re-runs. Output went to a scratch folder. */
+  test_mode?: boolean;
   summary: { rows_read: number | null; rows_written: number | null; rows_rejected: number } | null;
   error: RunError | null;
 };
@@ -80,8 +100,51 @@ export type Preview = Counts & {
   log: LogLine[];
   error: StepError | null;
   failed_step?: string | null;
+  /** For a failed step: what to do first, and what that's based on. */
+  next_step?: string | null;
+  evidence?: string[];
+  unseen?: string | null;
   calls?: ConnectorCall[];
 };
+/** One step tried on edited items, in test mode ("what if this step got these items?"). */
+export type WhatIfFate = {
+  n: number;
+  outcome: "kept" | "changed" | "skipped" | "failed";
+  reason?: string | null;
+  changes?: Record<string, [unknown, unknown]>;
+  /** At a decision: the answer this item went on with ("Yes", "No"). */
+  path?: string | null;
+};
+export type WhatIf = {
+  mode: "run" | "predict";
+  step: string;
+  note: string;
+  steps?: { id: string; label: string; status: Status; error: string | null; items: WhatIfFate[] }[];
+  out?: Row[];
+  /** A replay: what comes out now against what that run gave. */
+  compare?: {
+    before: number;
+    after: number;
+    changed: number;
+    now_skipped: number;
+    now_kept: number;
+    examples: { item: string; changes?: Record<string, [unknown, unknown]>; now?: string }[];
+  };
+};
+/** What's wrong now: the problem to solve first (with why and its next step), and the others. */
+export type Problem = {
+  id: string;
+  node_id: string | null;
+  kind: string;
+  title: string;
+  detail: string;
+  next_step: string;
+  prompt: string;
+  /** What the next step is based on (log lines, numbers), and what Flowhaus couldn't see. */
+  evidence?: string[];
+  unseen?: string | null;
+};
+export type NextSteps = { first: (Problem & { why: string | null }) | null; others: Problem[] };
 export type ConnectorCall = {
   t: string;
   app: string;
@@ -124,6 +187,9 @@ const q = (flowId: string) => `flow_id=${encodeURIComponent(flowId)}`;
 
 export type Settings = {
   show_demo: boolean;
+  /** Which agent runs the chat. Same tools and rules either way. */
+  chat_engine: "claude" | "codex";
+  codex: { available: boolean; signed_in: boolean; path: string | null; why: string | null };
   automations: number;
   automation_errors: Record<string, string>;
   project_dir: string;
@@ -144,7 +210,6 @@ export type McpServer = {
 };
 
 /** Something a reviewer would notice from the runs (see docs/practices.md). */
-export type Insight = { level: "info" | "warn" | "error"; kind: string; title: string; detail: string; node_id?: string | null };
 
 /** The harness's big-picture view of a connected automation (server/harness.py). */
 export type HarnessFinding = {
@@ -172,6 +237,50 @@ export type Harness = {
   answered: { id: string; title: string; answer: string; note?: string | null; at: string }[];
   coverage: { steps: number; with_numbers: number | null; linked_to_code: number; questions_answered: number; questions: number } | null;
   context_file: string | null;
+};
+
+/** One thing the review found, with what to do about it. `finding`s can be dismissed with a reason. */
+/** P0 critical (broken now), P1 high (likely wrong unnoticed), P2 medium (worth improving), P3 low (polish).
+ *  Only P0 ever blocks anything; the rest are suggestions. */
+export type Priority = "P0" | "P1" | "P2" | "P3";
+export const PRIORITY_LABEL: Record<Priority, string> = { P0: "Critical", P1: "High", P2: "Medium", P3: "Low" };
+
+export type ReviewItem = {
+  id: string;
+  source: "run" | "insight" | "finding" | "map" | "convention";
+  priority: Priority;
+  level: "info" | "warn" | "error";
+  title: string;
+  detail: string;
+  next_step?: string | null;
+  prompt?: string | null;
+  node_id?: string | null;
+  evidence: string[];
+  why?: string | null;
+  unseen?: string | null;
+  practice?: string | null;
+};
+export type Checkup = {
+  /** The problem to solve first and the others: the chat's opener reads this. */
+  plan: NextSteps;
+  /** Errors: what's broken in the run you're looking at, what fails silently, what drifts. */
+  fix_now: ReviewItem[];
+  silent: ReviewItem[];
+  drift: ReviewItem[];
+  ideas: ReviewItem[];
+  /** Improvements: ideas, and finishing the setup (gaps, blind spots, the map's problems and conventions; with `questions`). */
+  setup: ReviewItem[];
+  questions: HarnessQuestion[];
+  coverage: Harness["coverage"];
+  dismissed: Harness["dismissed"];
+  answered: Harness["answered"];
+  context_file: string | null;
+  /** fix_now + silent + drift */
+  errors: number;
+  /** ideas + setup + questions */
+  improvements: number;
+  total: number;
+  runs_checked: number;
 };
 
 export type TestCase = { id: string; item: Record<string, unknown>; note: string; expect: "kept" | "skipped" | "any"; generated?: boolean };
@@ -206,6 +315,8 @@ export type Change = {
   diff?: string;
   files: string[];
   warnings: string[];
+  /** What the user confirms before the pull request opens (from the review, not the chat). */
+  gate?: { id: string; priority: Priority; text: string }[];
   impact?: string;
   review?: {
     touched?: { id: string; label: string }[];
@@ -232,7 +343,7 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
 }
 
 export const api = {
-  openPullRequest: (id: string) => postJson<Change>(`/api/changes/${id}/pull-request`),
+  openPullRequest: (id: string, confirmed: string[]) => postJson<Change>(`/api/changes/${id}/pull-request`, { confirmed }),
   discardChange: (id: string) => postJson<Change>(`/api/changes/${id}/discard`),
   answerApproval: (id: string, allow: boolean) => postJson<{ ok: boolean }>(`/api/chat/approvals/${id}`, { allow }),
   tests: (flowId: string) => fetch(`/api/tests/${encodeURIComponent(flowId)}`).then((r) => json<TestLabState>(r)),
@@ -247,15 +358,21 @@ export const api = {
   runTests: (flowId: string, confirmed: boolean) => postJson<TestRun>(`/api/tests/${encodeURIComponent(flowId)}/run`, { confirmed }),
   testRun: (flowId: string, testId: string) =>
     fetch(`/api/tests/${encodeURIComponent(flowId)}/runs/${testId}`).then((r) => json<TestRun>(r)),
-  insights: (flowId: string) =>
-    fetch(`/api/insights?flow_id=${encodeURIComponent(flowId)}`).then((r) => json<{ insights: Insight[] }>(r)),
-  harness: (flowId: string) => fetch(`/api/harness?flow_id=${encodeURIComponent(flowId)}`).then((r) => json<Harness>(r)),
+  whatIf: (flowId: string, stepId: string, items: Record<string, unknown>[], downstream: boolean) =>
+    postJson<WhatIf>("/api/whatif", { flow_id: flowId, step_id: stepId, items, downstream }),
+  replay: (flowId: string, runId: string) => postJson<WhatIf>("/api/whatif/replay", { flow_id: flowId, run_id: runId }),
+  checkup: (flowId: string, runId?: string | null) =>
+    fetch(`/api/checkup?flow_id=${encodeURIComponent(flowId)}${runId ? `&run_id=${encodeURIComponent(runId)}` : ""}`).then((r) =>
+      json<Checkup>(r),
+    ),
   answerQuestion: (flowId: string, question_id: string, answer: string) =>
     postJson<Harness>(`/api/harness/${encodeURIComponent(flowId)}/answer`, { question_id, answer }),
   dismissFinding: (flowId: string, finding_id: string, reason: string) =>
     postJson<Harness>(`/api/harness/${encodeURIComponent(flowId)}/dismiss`, { finding_id, reason }),
   restoreHarness: (flowId: string, id: string) => postJson<Harness>(`/api/harness/${encodeURIComponent(flowId)}/restore`, { id }),
   mcp: () => fetch("/api/mcp").then((r) => json<{ servers: McpServer[] }>(r)),
+  mcpTools: (name: string) =>
+    postJson<{ tools: { name: string; description: string; asks_first: boolean }[] }>(`/api/mcp/${encodeURIComponent(name)}/tools`),
   setMcp: (name: string, enabled: boolean) =>
     fetch(`/api/mcp/${encodeURIComponent(name)}`, {
       method: "PUT",
@@ -268,21 +385,22 @@ export const api = {
     fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ show_demo }) }).then((r) =>
       json<Settings>(r),
     ),
+  setChatEngine: (chat_engine: "claude" | "codex") =>
+    fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_engine }) }).then(
+      (r) => json<Settings>(r),
+    ),
   setEnabled: (flowId: string, enabled: boolean) =>
     fetch(`/api/flows/${flowId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ enabled }),
     }).then((r) => json<{ enabled: boolean }>(r)),
-  requestFlow: (text: string) =>
-    fetch("/api/flow-requests", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text }),
-    }).then((r) => json<{ t: string }>(r)),
   connections: () => fetch("/api/connections").then((r) => json<{ connections: Connection[] }>(r)),
-  activity: (flowId?: string) =>
-    fetch(`/api/activity${flowId ? `?${q(flowId)}` : ""}`).then((r) => json<{ events: ActivityEvent[] }>(r)),
+  /** `refresh`: read connected automations' newest runs now, instead of a list read in the last minute. */
+  activity: (flowId?: string, refresh = false) =>
+    fetch(`/api/activity?${[flowId && q(flowId), refresh && "refresh=true"].filter(Boolean).join("&")}`).then((r) =>
+      json<{ events: ActivityEvent[] }>(r),
+    ),
   map: (flowId: string) => fetch(`/api/map?${q(flowId)}`).then((r) => json<FlowMap>(r)),
   inputs: (flowId: string) => fetch(`/api/inputs?${q(flowId)}`).then((r) => json<{ inputs: string[]; default: string | null }>(r)),
   runs: (flowId: string) => fetch(`/api/runs?${q(flowId)}`).then((r) => json<{ runs: RunSummary[] }>(r)),
@@ -325,6 +443,8 @@ export type FlowMeta = {
   enabled: boolean;
 };
 export type FlowCard = FlowMeta & {
+  /** What to do about it, when the flow needs attention. */
+  next_step?: string | null;
   apps: string[];
   step_count: number;
   problems: string[];

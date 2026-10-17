@@ -105,7 +105,7 @@ export function OnboardingGuide({
       </ol>
 
       {errors.length > 0 && (
-        <div className="space-y-1 border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+        <div className="space-y-1 border tone-error p-3 text-sm">
           <p className="font-medium">Some automation settings couldn't be read:</p>
           {errors.map(([folder, msg]) => (
             <p key={folder} className="font-mono text-xs break-all">

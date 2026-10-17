@@ -178,40 +178,18 @@ def test_folder_runs(autodir):
     assert a.get_run("../../etc") is None and a.get_run("..") is None
 
 
-def test_folder_runs_are_private_to_the_agent(autodir):
-    from server.agent import check_tool_use
-
-    base, _ = autodir
-    target = base / "invoice-export" / "runs" / "2026-10-01_09-00-00" / "orders.csv"
-    assert check_tool_use("Read", {"file_path": str(target)}) is not None
-    shouted = base / "invoice-export" / "RUNS" / "2026-10-01_09-00-00" / "orders.csv"  # macOS ignores case
-    assert check_tool_use("Read", {"file_path": str(shouted)}) is not None
+def test_the_chat_gets_counts_not_items_for_folder_runs(autodir):
     ctx = automations.all_automations()["invoice-export"].agent_context(None)
     assert ctx["run_being_viewed"] is None and len(ctx["recent_runs"]) == 3
-
-
-def test_agent_reads_only_source_in_connected_code(autodir, tmp_path):
-    from server.agent import check_tool_use
-
-    bot = tmp_path / "bot"
-    (bot / ".git").mkdir(parents=True)
-    for name in ("send.py", ".env", "credentials.json", "events.sqlite", "notes.bin", "gcp-key.json"):
-        (bot / name).write_text("x")
-    allowed = {name: check_tool_use("Read", {"file_path": str(bot / name)}) is None
-               for name in ("send.py", ".env", "credentials.json", "events.sqlite", "notes.bin", ".git/config", "gcp-key.json")}
-    assert allowed == {"send.py": True, ".env": False, "credentials.json": False, "events.sqlite": False,
-                       "notes.bin": False, ".git/config": False, "gcp-key.json": False}
-    from server.agent import _readable_files
-
-    assert {p.name for p in _readable_files(str(bot), None, 100)} == {"send.py"}
-    assert {p.name for p in _readable_files(str(bot), "?env", 100)} == set()
 
 
 def test_python_adapter(autodir):
     a = automations.all_automations()["backup-log"]
     runs = a.list_runs()
     assert runs[0]["error"]["message"] == "Backup drive not mounted"
-    assert a.get_run(runs[1]["run_id"])["nodes"]["verify"]["reject_reasons"] == {"Checksum differs": 1}
+    differ = a.get_run(runs[1]["run_id"])["nodes"]  # 14 copied, 13 verified: the "No" path, held for review
+    assert differ["review"]["rows_in"] == 1 and differ["flagged"]["status"] == "success"
+    assert differ["done"]["status"] == "not_run" and differ["stopped"]["status"] == "not_run"
 
 
 def test_new_user_starts_empty(tmp_path, monkeypatch):
@@ -328,3 +306,37 @@ def test_pages_never_wait_for_github_once_runs_are_known(autodir, monkeypatch):
     started = _time.time()
     assert a.list_runs() == a._list[1]
     assert _time.time() - started < 0.3  # answered from what it had; refreshing in the background
+
+
+def test_the_refresh_button_reads_the_newest_runs_now(autodir, monkeypatch):
+    import time as _time
+
+    a = automations.all_automations()["newsletter-digest"]
+    a.list_runs()
+    calls = []
+    fake = FakeGitHub()
+    monkeypatch.setattr(ga, "gh", lambda *args, **kw: (calls.append(args[:2]), fake(*args, **kw))[1])
+    a._list = (_time.time(), a._list[1])  # read moments ago: a plain read wouldn't ask GitHub
+    a.list_runs()
+    assert not [c for c in calls if c[:2] == ("run", "list")]
+    a.refresh()
+    assert [c for c in calls if c[:2] == ("run", "list")]  # asked GitHub, and waited for the answer
+    assert not a._refreshing
+
+
+def test_refresh_waits_for_a_read_already_under_way(autodir, monkeypatch):
+    import threading
+    import time as _time
+
+    a = automations.all_automations()["newsletter-digest"]
+    a.list_runs()
+    a._refreshing = True  # a page started a background read
+
+    def finish():
+        _time.sleep(0.3)
+        a._list = (_time.time(), [{"run_id": "new"}])
+        a._refreshing = False
+
+    threading.Thread(target=finish).start()
+    a.refresh()
+    assert a._list[1] == [{"run_id": "new"}]  # answered with the fresh list, not the old one

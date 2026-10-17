@@ -65,7 +65,7 @@ export function EnabledToggle({ flowId, enabled, onChange, size = "md", confirm,
       <button
         role="switch"
         aria-checked={value}
-        aria-label={value ? "On. Click to turn off" : "Off. Click to turn on"}
+        aria-label={confirm ? `Switched on in ${confirm.where}` : "Runs when triggered"} // on or off is aria-checked
         title={confirm ? `${value ? "On" : "Off"} in ${confirm.where}. Click to change` : value ? "On: runs when triggered. Click to pause" : "Paused: will not run. Click to turn on"}
         onClick={click}
         disabled={busy}
@@ -93,7 +93,7 @@ export function EnabledToggle({ flowId, enabled, onChange, size = "md", confirm,
             {next ? "Turn it on" : "Turn it off"} in {confirm.where}?
           </span>
           <span className="mt-1 block text-xs text-muted-foreground">{next ? confirm.onHint : confirm.offHint}</span>
-          {error && <span className="mt-2 block text-xs text-red-700">{error}</span>}
+          {error && <span className="mt-2 block text-xs text-red-700 dark:text-red-400">{error}</span>}
           <span className="mt-3 flex gap-2">
             <Button size="sm" onClick={() => apply(next)} disabled={busy}>
               {busy ? "Changing…" : next ? "Turn on" : "Turn off"}
@@ -104,7 +104,7 @@ export function EnabledToggle({ flowId, enabled, onChange, size = "md", confirm,
           </span>
         </span>
       )}
-      {!confirm && error && <span className="absolute top-full right-0 mt-1 w-56 text-xs text-red-700">{error}</span>}
+      {!confirm && error && <span className="absolute top-full right-0 mt-1 w-56 text-xs text-red-700 dark:text-red-400">{error}</span>}
     </span>
   );
 }

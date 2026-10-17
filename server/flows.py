@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from server import automations, maps, runs, runtime, sample_flows
 from server.automations.base import render_summary
@@ -68,7 +67,7 @@ def _read_state() -> dict:
     try:
         return json.loads(STATE_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"enabled": {}, "events": [], "requests": []}
+        return {"enabled": {}, "events": []}
 
 
 def _write_state(state: dict) -> None:
@@ -112,17 +111,6 @@ def set_enabled(flow_id: str, enabled: bool) -> None:
     log_event(flow_id, "change", f"Flow {'turned on' if enabled else 'paused'} by you")
 
 
-def add_request(text: str) -> dict:
-    """'New flow' requests: the fake door that records what people want automated."""
-    entry = {"t": datetime.now().isoformat(timespec="seconds"), "text": text}
-    with _state_lock:
-        state = _read_state()
-        state.setdefault("requests", []).append(entry)
-        _write_state(state)
-    log_event(None, "request", f"New flow requested: “{text[:140]}”")
-    return entry
-
-
 # --------------------------------------------------------------------------- registry
 
 
@@ -138,6 +126,24 @@ def built_flow_ids() -> list[str]:
 def show_demo() -> bool:
     """Demo and builder flows are hidden until asked for: a new user starts with an empty, honest app."""
     return bool(_read_state().get("show_demo", False))
+
+
+ENGINES = ("claude", "codex")
+
+
+def chat_engine() -> str:
+    """Which agent runs the in-app chat: Claude (Agent SDK) or Codex (the Codex CLI). Same tools, same rules."""
+    value = _read_state().get("chat_engine", "claude")
+    return value if value in ENGINES else "claude"
+
+
+def set_chat_engine(value: str) -> None:
+    if value not in ENGINES:
+        raise ValueError(f"The chat runs on {' or '.join(ENGINES)}")
+    with _state_lock:
+        state = _read_state()
+        state["chat_engine"] = value
+        _write_state(state)
 
 
 def set_show_demo(value: bool) -> None:
@@ -215,6 +221,7 @@ def get_map(flow_id: str) -> dict:
             m["problems"] = []
     else:
         m = sample_flows.build_map(sample_flows.SAMPLE_FLOWS[flow_id])
+    m = maps.without_single_child_groups(m)  # nothing to open in a box with one step: show the step
     return {**m, "flow": {**get_meta(flow_id), "enabled": is_enabled(flow_id)}}
 
 
@@ -257,7 +264,7 @@ def production_runs(flow_id: str, run_list: list[dict]) -> list[dict]:
     from server import testlab
 
     tests = testlab.test_run_ids(flow_id)
-    return [r for r in run_list if r.get("trigger") != "test" and r["run_id"] not in tests]
+    return [r for r in run_list if not r.get("test_mode") and r.get("trigger") != "test" and r["run_id"] not in tests]
 
 
 def overview() -> list[dict]:
@@ -287,8 +294,24 @@ def overview() -> list[dict]:
             },
             "kpis": _adapter(fid, lambda: kpis(fid, m["flow"], all_runs, recent), []),
             "freshness": freshness(fid),
+            "next_step": _attention_next_step(m, all_runs[0] if all_runs else None),
         })
     return cards
+
+
+def _attention_next_step(m: dict, last: dict | None) -> str | None:
+    """What to do about a flow that needs attention (the card says why; this says what to do)."""
+    from server import insights, nextstep
+
+    if last and last.get("status") == "failed":
+        error = last.get("error") or {}
+        step = next((s for s in m["steps"] if s["id"] == error.get("node_id")), None)
+        return nextstep.next_step_for(error, step)
+    if m["flow"].get("overdue"):
+        return insights.NEXT["missed_schedule"]
+    if m["problems"]:
+        return nextstep.MAP_NEXT_STEP
+    return None
 
 
 def freshness(flow_id: str) -> dict:
@@ -352,9 +375,9 @@ def kpis(flow_id: str, meta: dict, all_runs: list[dict], recent: list[dict]) -> 
 # --------------------------------------------------------------------------- activity log
 
 TRIGGER_TEXT = {"ui": "started by you", "manual": "started by you", "cli": "started from the command line",
-                "chat": "re-run by Claude after a change", "undo": "re-run after undoing a change",
+                "chat": "test run by the chat", "undo": "test run after undoing a change",
                 "webhook": "triggered by a new submission", "schedule": "started on schedule",
-                "event": "triggered by a new email", "test": "started by a test"}
+                "event": "triggered by a new email", "test": "test run"}
 
 
 def _run_events(flow_id: str, meta: dict, run: dict, full: dict | None) -> list[dict]:
@@ -393,10 +416,14 @@ def _unit(node: dict, meta: dict, n: int) -> str:
     return unit[:-1] if n == 1 and unit.endswith("s") else unit
 
 
-def activity(flow_id: str | None = None, limit: int = 300) -> list[dict]:
+def activity(flow_id: str | None = None, limit: int = 300, refresh: bool = False) -> list[dict]:
+    """Every run and change, newest first. `refresh` reads connected automations' newest runs now (the Refresh
+    button) instead of a list read in the last minute."""
     events = []
     ids = [flow_id] if flow_id else flow_ids()
     for fid in ids:
+        if refresh and fid in connected():
+            _adapter(fid, connected()[fid].refresh, None)
         meta = get_meta(fid)
         for summary in list_runs(fid)[:40]:
             full = _adapter(fid, lambda: connected()[fid].cached_run(summary["run_id"]), None) if fid in connected() else get_run(fid, summary["run_id"])

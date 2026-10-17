@@ -8,6 +8,7 @@ Every flow-scoped endpoint takes `flow_id` (defaults to the live contact flow).
 from __future__ import annotations
 
 import os
+import secrets
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from server import agent, changes, connections, flows, harness, insights, maps, mcp, runs, runtime, testlab
+from server import agent, changes, checkup, connections, flows, harness, maps, mcp, nextstep, runs, runtime, testlab, whatif
 
 app = FastAPI(title="Flowhaus")
 
@@ -96,7 +97,10 @@ def run_view(run: dict, fmap: dict, flow_id: str = flows.LIVE_ID) -> dict:
             "credits": sum(nodes[m].get("credits") or 0 for m in members),
         }
     view = {k: v for k, v in run.items() if k not in ("nodes", "groups", "contacts", "input_items", "output_items")}
-    view["input_count"] = len(run.get("input_items") or [])
+    # how many came in: the items themselves if the run kept them, else the run's own count (many automations count
+    # but don't keep items), else unknown (None): better no number than a wrong "0"
+    items, read = run.get("input_items"), (run.get("summary") or {}).get("rows_read")
+    view["input_count"] = len(items) if items else read
     view["output_count"] = None if run.get("output_items") is None else len(run["output_items"])
     previous = _previous_counts(flow_id, run) if run["status"] != "running" else None
     return {**view, "nodes": nodes, "groups": group_view, "previous": previous}
@@ -144,27 +148,18 @@ def patch_flow(flow_id: str, body: FlowPatch):
     return {"id": flow_id, "enabled": body.enabled}
 
 
-class FlowRequest(BaseModel):
-    text: str
-
-
-@app.post("/api/flow-requests")
-def request_flow(body: FlowRequest):
-    if not body.text.strip():
-        raise HTTPException(400, "Describe what you want to automate.")
-    return flows.add_request(body.text.strip())
-
-
 class Settings(BaseModel):
-    show_demo: bool
+    show_demo: bool | None = None
+    chat_engine: str | None = None
 
 
 def _settings() -> dict:
     """App state the UI needs, including what onboarding shows to a new user."""
-    from server import automations
+    from server import automations, codex_engine
 
     found, errors = automations.load_all()
     return {"show_demo": flows.show_demo(), "automations": len(found), "automation_errors": errors,
+            "chat_engine": flows.chat_engine(), "codex": codex_engine.status(),
             "project_dir": str(runtime.ROOT), "automations_dir": str(automations.automations_dir())}
 
 
@@ -175,13 +170,19 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings(body: Settings):
-    flows.set_show_demo(body.show_demo)
+    if body.show_demo is not None:
+        flows.set_show_demo(body.show_demo)
+    if body.chat_engine is not None:
+        try:
+            flows.set_chat_engine(body.chat_engine)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     return _settings()
 
 
 @app.get("/api/activity")
-def get_activity(flow_id: str | None = None, limit: int = 300):
-    return {"events": flows.activity(flow_id, limit)}
+def get_activity(flow_id: str | None = None, limit: int = 300, refresh: bool = False):
+    return {"events": flows.activity(flow_id, limit, refresh)}
 
 
 # --------------------------------------------------------------------------- connections
@@ -253,7 +254,8 @@ def get_preview(node_id: str, run_id: str | None = None, flow_id: str = flows.LI
     if run is None:
         raise HTTPException(404, "No run yet. Start a run first.")
     if node_id in run["nodes"]:
-        return {"kind": "step", "node_id": node_id, "run_id": run_id, **run["nodes"][node_id]}
+        node = run["nodes"][node_id]
+        return {"kind": "step", "node_id": node_id, "run_id": run_id, **node, **_next_step(flow_id, node_id, node)}
     if node_id in ("__input__", "__output__"):
         return _io_preview(run, node_id == "__output__", flow_id)
     fmap = _flow_map(flow_id)
@@ -270,13 +272,24 @@ def get_preview(node_id: str, run_id: str | None = None, flow_id: str = flows.LI
         if s in run["nodes"]
     ]
     error = run["nodes"][g["failed_step"]]["error"] if g["failed_step"] else None
-    return {"kind": "group", "node_id": node_id, "run_id": run_id, "status": g["status"],
+    hint = _next_step(flow_id, g["failed_step"], run["nodes"][g["failed_step"]]) if g["failed_step"] else {}
+    return {"kind": "group", "node_id": node_id, "run_id": run_id, "status": g["status"], **hint,
             "failed_step": g["failed_step"], "error": error, "log": log,
             "rows_in": data.get("rows_in"), "rows_out": data.get("rows_out"),
             "rows_rejected": data.get("rows_rejected", 0), "rows_changed": data.get("rows_changed", 0),
             "sample_in": data.get("sample_in") or [], "sample_out": data.get("sample_out") or [],
             "rejected_samples": data.get("rejected_samples") or [],
             "reject_reasons": data.get("reject_reasons") or {}, "paired": data.get("paired", True)}
+
+
+def _next_step(flow_id: str, step_id: str, node: dict) -> dict:
+    """For a failed step: what to do first, and what that's based on (actionable, not only "it failed")."""
+    error = node.get("error") or {}
+    if node.get("status") != "failed" or not error.get("message"):
+        return {}
+    step = next((s for s in _flow_map(flow_id)["steps"] if s["id"] == step_id), None)
+    seen, unseen = nextstep.evidence(node, None)
+    return {"next_step": nextstep.next_step_for(error, step), "evidence": seen, "unseen": unseen}
 
 
 def _io_preview(run: dict, output: bool, flow_id: str) -> dict:
@@ -375,14 +388,20 @@ def list_changes(flow_id: str | None = None):
 
 @app.get("/api/changes/{change_id}")
 def get_change(change_id: str):
-    return changes.get(change_id)
+    meta = changes.get(change_id)
+    return {**meta, "gate": changes.gate(meta)} if meta["status"] == "proposed" else meta
+
+
+class OpenPullRequest(BaseModel):
+    confirmed: list[str] = []  # the ids of the change's `gate` the user ticked
 
 
 @app.post("/api/changes/{change_id}/pull-request")
-def open_pull_request(change_id: str):
-    """The user's approval: only this endpoint (called by the "Open pull request" button) opens a pull request."""
+def open_pull_request(change_id: str, body: OpenPullRequest | None = None):
+    """The user's approval: only this endpoint (called by the "Open pull request" button) opens a pull request, and
+    only once everything the review found is confirmed."""
     try:
-        meta = changes.open_pull_request(change_id)
+        meta = changes.open_pull_request(change_id, (body.confirmed if body else []))
     except changes.ChangeError as exc:
         raise HTTPException(400, str(exc))
     flows.log_event(meta["flow_id"], "change", f"Pull request opened by you: “{meta['title']}” {meta['pr_url']}")
@@ -408,11 +427,73 @@ async def answer_approval(approval_id: str, body: Approval):
     return {"ok": True}
 
 
-@app.get("/api/insights")
-def get_insights(flow_id: str):
-    """What a reviewer would notice from the runs: drops, silent losses, repeated failures, effects of changes."""
-    flows.get_meta(flow_id)  # 404 for unknown flows
-    return {"insights": insights.insights(flow_id)}
+# --------------------------------------------------------------------------- tools for the Codex chat engine
+
+
+def _codex_only(request: Request) -> None:
+    """Only the Codex process Flowhaus started has this token (see server/codex_engine.py)."""
+    if not secrets.compare_digest(request.headers.get("x-flowhaus-token", ""), agent.CODEX_TOKEN):
+        raise HTTPException(403, "Not allowed")
+
+
+@app.get("/api/agent/tools")
+def agent_tools(request: Request):
+    _codex_only(request)
+    return {"tools": agent.codex_tools()}
+
+
+class ToolCall(BaseModel):
+    name: str
+    arguments: dict = {}
+
+
+@app.post("/api/agent/call")
+async def agent_call(request: Request, body: ToolCall):
+    _codex_only(request)
+    text, is_error = await agent.call_codex_tool(body.name, body.arguments)
+    return {"text": text, "is_error": is_error}
+
+
+class WhatIf(BaseModel):
+    flow_id: str
+    step_id: str
+    items: list[dict]
+    downstream: bool = True
+
+
+@app.post("/api/whatif")
+def what_if(body: WhatIf):
+    """Run one step (and what comes after it) on edited items, in test mode: nothing published or saved."""
+    try:
+        return whatif.try_step(body.flow_id, body.step_id, body.items, body.downstream)
+    except KeyError:
+        raise HTTPException(404, "No such flow or step")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class Replay(BaseModel):
+    flow_id: str
+    run_id: str
+
+
+@app.post("/api/whatif/replay")
+def replay_run(body: Replay):
+    """Send a past run's items through the flow as it is now, in test mode, and compare with what that run gave."""
+    try:
+        return whatif.replay(body.flow_id, body.run_id)
+    except KeyError:
+        raise HTTPException(404, "No such flow or run")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/checkup")
+def get_checkup(flow_id: str, run_id: str | None = None):
+    """The Review button: everything that's broken, silently failing, drifting or could be better, each with its
+    next step, and the problem to solve first (the chat's first message when there are errors)."""
+    flows.get_meta(flow_id)
+    return checkup.checkup(flow_id, run_id)
 
 
 @app.get("/api/harness")
@@ -514,6 +595,27 @@ def get_test_run(flow_id: str, test_id: str):
 def get_mcp():
     """MCP servers found in your Claude Code / Claude Desktop / Cursor / project settings, and which the chat may use."""
     return mcp.summary()
+
+
+@app.post("/api/mcp/{name}/tools")
+async def mcp_tools(name: str):
+    """Start the server briefly and ask which tools it offers (only when you click "Show tools").
+
+    A POST, not a GET: it starts a program from your setup, so other web pages must not be able to trigger it.
+    """
+    from server import mcp_client
+
+    server = mcp.discover().get(name)
+    if server is None:
+        raise HTTPException(404, f"No MCP server '{name}' in your setup")
+    if server["problem"]:
+        raise HTTPException(400, f"Can't start it: {server['problem']}")
+    try:
+        tools = await mcp_client.list_tools(server["sdk"])
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    allowed = {t["name"]: not mcp.needs_approval(f"mcp__{name}__{t['name']}") for t in tools}
+    return {"tools": [{"name": t["name"], "description": t["description"], "asks_first": not allowed[t["name"]]} for t in tools]}
 
 
 class McpToggle(BaseModel):

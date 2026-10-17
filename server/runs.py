@@ -26,6 +26,18 @@ RUNS_DIR = ROOT / "runs"
 DATA_DIR = ROOT / "data"
 DEFAULT_INPUT = "data/contacts.csv"
 OUTPUT_PATH = "output/contacts_clean.csv"
+# Only these are real runs: someone pressed Run, or ran it in a terminal. Every other run (the chat's runs and re-runs
+# after an edit or undo, the test lab) is a test-mode run: output to a scratch folder, inside the sandbox.
+REAL_TRIGGERS = ("ui", "cli")
+
+
+def is_test(trigger: str) -> bool:
+    return trigger not in REAL_TRIGGERS
+
+
+def test_dir(flow_id: str) -> Path:
+    """Where test-mode runs of a flow may write."""
+    return ROOT / "state" / "tests" / flow_id
 SAMPLE_ROWS = 10
 MAX_REJECTED_SAMPLES = 200
 STALE_AFTER_S = 300
@@ -58,7 +70,8 @@ _parse_cache: dict[Path, tuple[float, int, dict]] = {}
 
 def new_run_id(flow_id: str | None = None) -> str:
     """Reserve a unique run id by creating its file (safe across threads and processes)."""
-    RUNS_DIR.mkdir(exist_ok=True)
+    if not RUNS_DIR.is_dir():  # (a sandboxed test run may not even try to create an existing folder)
+        RUNS_DIR.mkdir(exist_ok=True)
     prefix = f"{flow_id}--" if flow_id and flow_id != LIVE_FLOW else ""
     base = prefix + datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     with _id_lock:
@@ -74,7 +87,8 @@ def new_run_id(flow_id: str | None = None) -> str:
 
 
 def _write(run: dict) -> None:
-    RUNS_DIR.mkdir(exist_ok=True)
+    if not RUNS_DIR.is_dir():  # (a sandboxed test run may not even try to create an existing folder)
+        RUNS_DIR.mkdir(exist_ok=True)
     path = RUNS_DIR / f"{run['run_id']}.json"
     tmp = path.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(run, indent=2, default=str))
@@ -127,15 +141,11 @@ def list_runs(flow_id: str = LIVE_FLOW) -> list[dict]:
         run = get_run(path.stem)
         if run is None or (run.get("flow_id") or LIVE_FLOW) != flow_id:
             continue
-        runs.append({k: run.get(k) for k in ("run_id", "flow_id", "status", "started_at", "finished_at", "input_file",
-                                              "trigger", "summary", "error")})
+        runs.append({**{k: run.get(k) for k in ("run_id", "flow_id", "status", "started_at", "finished_at", "input_file",
+                                                "trigger", "summary", "error")},
+                     "test_mode": bool(run.get("test_mode", run.get("trigger") == "test"))})
     runs.sort(key=lambda r: (r.get("started_at") or "", r["run_id"]), reverse=True)
     return runs
-
-
-def latest_run_id(flow_id: str = LIVE_FLOW) -> str | None:
-    runs = list_runs(flow_id)
-    return runs[0]["run_id"] if runs else None
 
 
 def list_inputs(flow_id: str = LIVE_FLOW) -> list[str]:
@@ -326,7 +336,7 @@ def create_run_stub(run_id: str, input_file: str, trigger: str, flow_id: str = L
     except Exception:
         steps = []
     run = {"run_id": run_id, "flow_id": flow_id, "status": "running", "started_at": _now(), "finished_at": None,
-           "input_file": input_file, "trigger": trigger, "error": None, "summary": None,
+           "input_file": input_file, "trigger": trigger, "error": None, "summary": None, "test_mode": is_test(trigger),
            "nodes": {s["id"]: _empty_node(s) for s in steps}, "groups": {}, "contacts": []}
     _write(run)
     return run
@@ -377,8 +387,8 @@ def execute_run(run_id: str, input_file: str | None = None, trigger: str = "cli"
 
     try:
         output = paths["output"]
-        if trigger == "test":  # test runs never touch the real output: they write to a scratch folder
-            output = ROOT / "state" / "tests" / (flow_id or LIVE_FLOW) / "output" / (output.name if output.suffix else "")
+        if is_test(trigger):  # test-mode runs never touch the real output: they write to a scratch folder
+            output = test_dir(flow_id or LIVE_FLOW) / "output" / (output.name if output.suffix else "")
             (output.parent if output.suffix else output).mkdir(parents=True, exist_ok=True)
         inputs = {"input_path": str(ROOT / input_file), "csv_path": str(ROOT / input_file),
                   "output_dir": str(output if output.suffix == "" else output.parent),
@@ -434,7 +444,8 @@ def _group_results(frames: dict[str, tuple], steps: list[dict], groups: list[dic
 
 
 def io_items(frames: dict[str, tuple], order: list[str]) -> tuple[list[dict], list[dict] | None]:
-    """(everything that came in, everything that came out) for a run, without the internal columns.
+    """(everything that came in, everything that came out) for a run, without the internal columns, except that an
+    item the first step already skipped keeps its `_rejected_reason` (hidden in the UI; Replay leaves it out).
 
     Output is None when the run didn't finish, so there is no output yet.
     """
@@ -448,7 +459,7 @@ def io_items(frames: dict[str, tuple], order: list[str]) -> tuple[list[dict], li
         if only_active:
             df = df[df["_rejected_reason"].isna()] if "_rejected_reason" in df.columns else df
         recs = _records(df, list(df["_row_id"])[:MAX_IO_ITEMS])
-        return [{k: v for k, v in r.items() if k != "_rejected_reason"} for r in recs]
+        return [{k: v for k, v in r.items() if k != "_rejected_reason" or (not only_active and v)} for r in recs]
 
     return rows(first, only_active=False), (rows(last, only_active=True) if last is not None else None)
 
@@ -493,20 +504,6 @@ def find_contacts(run: dict, query: str, limit: int = 20) -> list[dict]:
     return matches[:limit]
 
 
-def compare_outcomes(old: dict, new: dict) -> dict:
-    """Which contacts changed outcome between two runs (by row id)."""
-    before = {c["row_id"]: c for c in old.get("contacts", [])}
-    changes = []
-    for c in new.get("contacts", []):
-        prev = before.get(c["row_id"])
-        if prev is None or (prev["outcome"], prev["reason"]) == (c["outcome"], c["reason"]):
-            continue
-        changes.append({"row_id": c["row_id"], "name": c["name"], "email": c["email"],
-                        "was": prev["reason"] or prev["outcome"], "now": c["reason"] or c["outcome"]})
-    return {"old_run": old["run_id"], "new_run": new["run_id"],
-            "old_summary": old.get("summary"), "new_summary": new.get("summary"), "changed_contacts": changes}
-
-
 def _summary(run: dict) -> dict:
     nodes = list(run["nodes"].values())
     first = next((n for n in nodes if n["rows_in"] is not None), None)
@@ -524,11 +521,13 @@ def _summary(run: dict) -> dict:
 
 
 def _spawn(run_id: str, input_file: str, trigger: str, flow_id: str = LIVE_FLOW) -> subprocess.Popen:
-    return subprocess.Popen(
-        [sys.executable, "-m", "server.runs", "--run-id", run_id, "--input", input_file, "--trigger", trigger,
-         "--flow", flow_id],
-        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=runtime.step_env(),
-    )
+    cmd = [sys.executable, "-m", "server.runs", "--run-id", run_id, "--input", input_file, "--trigger", trigger,
+           "--flow", flow_id]
+    env = runtime.step_env()
+    if is_test(trigger):  # isolated: it may write only its scratch folder and its run record, and has no network
+        cmd, _ = runtime.sandboxed(cmd, [test_dir(flow_id), RUNS_DIR])
+        env = runtime.test_env(test_dir(flow_id))
+    return subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env)
 
 
 def _finish(proc: subprocess.Popen, run_id: str, timeout_s: float) -> None:

@@ -163,14 +163,54 @@ def propose(change_id: str, summary: str, impact: str = "", review: dict | None 
                 "review it carefully." for f in files if SENSITIVE.search(f)]
     meta.update(status="proposed", summary=summary.strip()[:4000], impact=impact.strip()[:4000], diff=diff[:400_000],
                 files=files, warnings=warnings, review=review or {})
+    meta["gate"] = gate(meta)
     return _save(meta)
 
 
-def open_pull_request(change_id: str) -> dict:
-    """Only ever called from the UI after the user clicked "Open pull request"."""
+def gate(meta: dict) -> list[dict]:
+    """What the review found, for you to check before the pull request opens, with a priority each (P0 to P3).
+
+    Only P0 must be confirmed before it can open: the change touches files that run with your repository's secrets
+    or on other machines (CI, workflows, build, install). Everything else is a suggestion: worth a look, not a wall.
+    The points come from the harness, not from the chat that wrote the change. Each: {id, priority, text}.
+    """
+    r = meta.get("review") or {}
+    items = [{"id": f"sensitive:{i}", "priority": "P0", "text": w} for i, w in enumerate(meta.get("warnings") or [])]
+    for x in r.get("log_lines") or []:
+        items.append({"id": f"log_line:{x.get('step')}:{x.get('line')}", "priority": "P1",
+                      "text": f"It edits a log line the map counts for “{x.get('label')}”: update the counting rule too, "
+                              "or that step will look empty."})
+    if r.get("downstream"):
+        items.append({"id": "downstream", "priority": "P2", "text": "Check what changes for the steps after it: "
+                      + " → ".join(d["label"] for d in r["downstream"][:8]) + "."})
+    for x in r.get("repeats") or []:
+        items.append({"id": f"repeat:{x.get('file')}:{x.get('same_as')}", "priority": "P2",
+                      "text": f"{x.get('file')} repeats code that already exists in {x.get('same_as')}: consider reusing it."})
+    if r.get("unmapped_files"):
+        items.append({"id": "unmapped", "priority": "P2", "text": "It changes files no step points at "
+                      f"({', '.join(r['unmapped_files'][:4])}): check which steps use them."})
+    items.append({"id": "untested", "priority": "P3", "text": "It hasn't run yet: Flowhaus compares the first run after "
+                                                              "merging with the numbers from before."})
+    return items
+
+
+def required(meta: dict) -> list[dict]:
+    """The points that must be confirmed before the pull request opens: the P0 ones."""
+    return [g for g in gate(meta) if g["priority"] == "P0"]
+
+
+class GateError(ChangeError):
+    """The pull request can't open yet: something in the review isn't confirmed."""
+
+
+def open_pull_request(change_id: str, confirmed: list[str] | None = None) -> dict:
+    """Only ever called from the UI after the user clicked "Open pull request", with everything in `gate` confirmed."""
     meta = get(change_id)
     if meta["status"] != "proposed":
         raise ChangeError(f"This change is {meta['status']}, not waiting for review.")
+    missing = [g["text"] for g in required(meta) if g["id"] not in set(confirmed or [])]
+    if missing:
+        raise GateError("Confirm the critical points first: " + " / ".join(missing))
     dest = workspace(change_id)
     body = (f"{meta['summary']}\n\n---\nProposed in Flowhaus's chat and approved by you before this pull request was "
             "opened. Please review the diff before merging.")

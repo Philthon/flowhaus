@@ -5,6 +5,7 @@ Flowhaus keeps no MCP config and no keys of its own. It reads (never writes) the
   - project files:   .mcp.json in this folder and in each connected automation's local_path
   - Claude Desktop:  claude_desktop_config.json
   - Cursor:          ~/.cursor/mcp.json
+  - Codex:           ~/.codex/config.toml (or $CODEX_HOME), and .codex/config.toml in a project
 You choose which ones the chat may use (Apps page, or `flowhaus mcp enable <name>`); that choice is the only
 thing Flowhaus stores (state/mcp.json: names, no settings). Keys stay in the original files or your environment.
 
@@ -21,6 +22,7 @@ import os
 import re
 import sys
 import threading
+import tomllib
 from pathlib import Path
 
 from server import automations, runtime
@@ -47,6 +49,43 @@ def _desktop_config() -> Path:
     return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
 
+def _read_toml(path: Path) -> dict:
+    try:
+        data = tomllib.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _from_codex(servers: dict) -> dict:
+    """Codex's [mcp_servers.<name>] tables in the common shape (keys stay where they are: env names, not values)."""
+    out = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict) or cfg.get("enabled") is False:
+            continue
+        if cfg.get("command"):
+            env = {k: str(v) for k, v in (cfg.get("env") or {}).items()}
+            for var in cfg.get("env_vars") or []:  # names Codex forwards from its environment
+                name_ = var.get("name") if isinstance(var, dict) else var
+                if name_:
+                    env[str(name_)] = "${" + str(name_) + "}"
+            out[name] = {"type": "stdio", "command": cfg["command"], "args": cfg.get("args") or [], "env": env}
+        elif cfg.get("url"):
+            headers = {k: str(v) for k, v in (cfg.get("http_headers") or {}).items()}
+            headers.update({k: "${" + str(v) + "}" for k, v in (cfg.get("env_http_headers") or {}).items()})
+            if cfg.get("bearer_token_env_var"):
+                headers["Authorization"] = "Bearer ${" + str(cfg["bearer_token_env_var"]) + "}"
+            entry = {"type": "http", "url": cfg["url"], "headers": headers}
+            if not headers and cfg.get("auth", "oauth") in ("oauth", "chatgpt"):
+                entry["problem"] = "signs in through Codex (OAuth); Flowhaus can't reuse that sign-in"
+            out[name] = entry
+    return out
+
+
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
 def sources() -> list[tuple[str, Path, dict]]:
     """(label, file, {name: server config}) for every place MCP servers are configured, most specific first."""
     out: list[tuple[str, Path, dict]] = []
@@ -68,6 +107,13 @@ def sources() -> list[tuple[str, Path, dict]]:
     cursor = Path.home() / ".cursor" / "mcp.json"
     if cursor.exists():
         out.append(("Cursor", cursor, _read_json(cursor).get("mcpServers") or {}))
+    for d in project_dirs:
+        f = d / ".codex" / "config.toml"
+        if f.exists():
+            out.append((f"Codex project file in {d.name}", f, _from_codex(_read_toml(f).get("mcp_servers") or {})))
+    codex = _codex_home() / "config.toml"
+    if codex.exists():
+        out.append(("Codex", codex, _from_codex(_read_toml(codex).get("mcp_servers") or {})))
     return out
 
 
@@ -85,6 +131,8 @@ def _expand(value: str, missing: list[str]) -> str:
 
 def _sdk_config(cfg: dict) -> tuple[dict | None, str | None]:
     """The server in the Agent SDK's format, or (None, why not)."""
+    if cfg.get("problem"):
+        return None, cfg["problem"]
     missing: list[str] = []
     kind = cfg.get("type") or ("stdio" if cfg.get("command") else "http" if cfg.get("url") else None)
     if kind == "stdio":
@@ -139,13 +187,11 @@ def set_enabled(name: str, enabled: bool) -> None:
 
 
 def _allow_rules() -> list[str]:
-    """`mcp__…` entries from your Claude Code permission rules: tools you already let run without asking."""
-    files = [Path.home() / ".claude" / "settings.json", runtime.ROOT / ".claude" / "settings.json",
-             *[p / ".claude" / "settings.json" for a in automations.all_automations().values() if (p := a.local_path())]]
-    rules = []
-    for f in files:
-        rules += [r for r in (_read_json(f).get("permissions") or {}).get("allow") or [] if str(r).startswith("mcp__")]
-    return rules
+    """`mcp__…` entries from your own Claude Code permission rules (~/.claude/settings.json): tools you already let
+    run without asking. The same file the Claude chat follows (`setting_sources=["user"]`); never a project's or a
+    connected repo's settings, which someone else could have written."""
+    rules = (_read_json(Path.home() / ".claude" / "settings.json").get("permissions") or {}).get("allow") or []
+    return [r for r in rules if str(r).startswith("mcp__")]
 
 
 def load() -> tuple[dict[str, dict], dict[str, str]]:

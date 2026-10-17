@@ -59,7 +59,13 @@ def test_change_becomes_a_pull_request_only_when_opened(project):
     assert "flowhaus/" not in branches  # proposing sent nothing anywhere
     assert (project["local"] / "bot.py").read_text() == "LIMIT = 10\n"  # the user's folder is untouched
 
-    meta = changes.open_pull_request(meta["id"])
+    # it edits a CI file (P0): it can't open until that's confirmed; the rest are suggestions
+    with pytest.raises(changes.GateError):
+        changes.open_pull_request(meta["id"])
+    critical = [g["id"] for g in meta["gate"] if g["priority"] == "P0"]
+    assert critical and all(c.startswith("sensitive:") for c in critical)
+    assert {g["id"] for g in meta["gate"] if g["priority"] != "P0"} >= {"untested"}
+    meta = changes.open_pull_request(meta["id"], critical)  # suggestions left unticked: fine
     assert meta["status"] == "opened" and meta["pr_url"].endswith("/pull/7")
     branches = subprocess.run(["git", "branch", "--list"], cwd=project["remote"], capture_output=True, text=True).stdout
     assert meta["branch"] in branches
@@ -77,27 +83,10 @@ def test_hooks_never_run(project, tmp_path):
         (hooks / name).chmod(0o755)
     git(ws, "config", "core.hooksPath", "hooks")  # as if a file the chat wrote tried to install hooks
     (ws / "bot.py").write_text("LIMIT = 30\n")
-    changes.open_pull_request(changes.propose(meta["id"], "s")["id"])
+    proposed = changes.propose(meta["id"], "s")
+    assert changes.required(proposed) == []  # nothing critical: it opens without ticking anything
+    changes.open_pull_request(proposed["id"])
     assert not marker.exists()
-
-
-def test_chat_edits_only_the_change_copy(project):
-    agent.WORKER.current_flow = "bot"
-    try:
-        assert agent.check_tool_use("Write", {"file_path": str(project["local"] / "bot.py")}) is not None
-        meta = changes.start(project["adapter"], "x")
-        agent.WORKER.active_change = meta["id"]
-        ws = changes.workspace(meta["id"])
-        assert agent.check_tool_use("Write", {"file_path": str(ws / "bot.py")}) is None
-        assert agent.check_tool_use("Edit", {"file_path": str(ws / "src" / "new.py")}) is None
-        assert agent.check_tool_use("Write", {"file_path": str(ws / ".git" / "config")}) is not None
-        assert agent.check_tool_use("Write", {"file_path": str(ws / ".env")}) is not None
-        assert agent.check_tool_use("Write", {"file_path": str(project["local"] / "bot.py")}) is not None
-        assert agent.check_tool_use("Write", {"file_path": "pipeline/clean.py"}) is not None
-        agent.WORKER.current_flow = "something-else"  # left the automation: the copy is no longer writable
-        assert agent.check_tool_use("Write", {"file_path": str(ws / "bot.py")}) is not None
-    finally:
-        agent.WORKER.current_flow, agent.WORKER.active_change = None, None
 
 
 def test_changes_need_opt_in(project, tmp_path):
@@ -154,8 +143,8 @@ def test_mcp_call_waits_for_the_user():
     async def scenario(allow: bool):
         sink = agent.EventSink()
         agent.WORKER.sink = sink
-        task = asyncio.create_task(agent.pre_tool_hook(
-            {"tool_name": "mcp__n8n__activate_workflow", "tool_input": {"id": 3}}, None, None))
+        # Claude Code asks this when the user's own rules don't allow the tool
+        task = asyncio.create_task(agent.ask_permission("mcp__n8n__activate_workflow", {"id": 3}, None))
         event = await asyncio.wait_for(sink.queue.get(), 2)
         assert event["type"] == "approval" and event["tool"] == "activate_workflow"
         assert not task.done()  # nothing happens until the user answers
@@ -163,8 +152,19 @@ def test_mcp_call_waits_for_the_user():
         return await asyncio.wait_for(task, 2)
 
     try:
-        assert asyncio.run(scenario(True)) == {}
-        denied = asyncio.run(scenario(False))
-        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert isinstance(asyncio.run(scenario(True)), agent.PermissionResultAllow)
+        assert isinstance(asyncio.run(scenario(False)), agent.PermissionResultDeny)
     finally:
         agent.WORKER.sink = None
+
+
+def test_mcp_approvals_follow_only_your_own_settings(tmp_path, monkeypatch):
+    """A connected repo's (or this project's) .claude/settings.json can't pre-approve MCP calls: someone else could
+    have written it. Only ~/.claude/settings.json counts, as in the Claude chat."""
+    home = Path(os.environ["HOME"])
+    claude_setup(home, {"n8n": {"command": "npx"}}, allow=[])
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text(json.dumps({"permissions": {"allow": ["mcp__*"]}}))
+    monkeypatch.setattr(mcp.runtime, "ROOT", repo)
+    assert mcp.needs_approval("mcp__n8n__activate_workflow")

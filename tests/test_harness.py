@@ -136,6 +136,12 @@ def test_steps_without_numbers_are_a_blind_spot(fake):
     assert r["coverage"]["with_numbers"] == 2
 
 
+def test_a_path_not_taken_is_not_a_blind_spot(fake):
+    nodes = {"fetch": node(100, 100), "keep": {"status": "not_run"}, "post": node(40, 40)}  # this path didn't need "keep"
+    r = fake([run(i, nodes) for i in range(4)])
+    assert not any(f["id"].startswith("no_numbers:") for f in r["findings"])
+
+
 def test_code_next_to_the_steps_but_off_the_map(fake, tmp_path):
     code = tmp_path / "project"
     (code / "src").mkdir(parents=True)
