@@ -9,9 +9,9 @@
 
 ![Flowhaus overview of GitHub Actions workflows and scripts: each automation with its recent runs, and the ones that need attention first](docs/images/flows.png)
 
-When an automation goes quiet or half-fails, finding out what happened usually means reading logs. Flowhaus puts a map on top that someone who doesn't code can read:
+When an automation goes quiet or half-fails, finding out what happened means reading logs or asking an agent, which reads the code and logs again every time and answers once. Flowhaus keeps a map instead: the stages a person would name ("Collect articles", "Pick the best", "Send the digest"), not a 1:1 copy of the code's functions or a trace drawn as the run happens. An agent writes it once from the code, `flowhaus check` holds it against real runs, and from then on everyone sees the same picture, with each run's numbers on it:
 
-- **A flowchart of every automation:** a start and an end, decisions with "Yes" / "No" answers, waits, and boxes you can open. Each step says what it gives you ("Adds each page's text; skips pages that can't be fetched").
+- **A conceptual flowchart of every automation:** a start and an end, decisions with "Yes" / "No" answers, waits, and boxes you can open for the steps inside. Each step says what it gives you ("Adds each page's text; skips pages that can't be fetched") and links to the code behind it.
 - **Numbers on every step, for every run:** items in, items out, items skipped and why ("286 merged as duplicates").
 - **What to do next, not just what's wrong:** a failed run opens the chat with the problem to fix first and a short next step ("Renew Xero's login, then run it again").
 - **A Review of each flow:** errors (failures, silent losses, slow drift) and improvements, each with a priority from P0 to P3 and the log lines it's based on.
